@@ -1,0 +1,94 @@
+# ============================================
+# SOLVEXA APP - GITIGNORE
+# ============================================
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production builds
+dist/
+dist-ssr/
+build/
+out/
+
+# Environment and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.local
+*.pem
+*.key
+*.p12
+*.jks
+
+# Service account credentials
+service-account*.json
+*-service-account*.json
+firebase-adminsdk*.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Cache directories
+.cache/
+.vite/
+.eslintcache
+.parcel-cache/
+.oxlintcache
+
+# Coverage & testing
+coverage/
+.nyc_output/
+
+# Temporary and backup files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.swp
+*.swo
+*~
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Editor & IDE settings
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Firebase emulator / local generated files
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+emulator-data/
+
+# TypeScript build info
+*.tsbuildinfo

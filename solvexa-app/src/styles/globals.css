@@ -1,0 +1,188 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap');
+
+@import "tailwindcss";
+@config "../../tailwind.config.js";
+
+/* ============================================
+   SOLVEXA GLOBAL BASE STYLES
+   ============================================ */
+
+html {
+  font-family: 'Inter', system-ui, sans-serif;
+  scroll-behavior: smooth;
+  height: 100%;
+}
+
+body {
+  background-color: #0A0A0B;
+  color: #e5e2e3;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
+  overflow-x: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+/* Global Shell & Layout Safety */
+.app-shell {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
+}
+
+@media (max-width: 767px) {
+  .app-shell {
+    display: block;
+    width: 100%;
+  }
+}
+
+.main-content {
+  min-width: 0;
+  width: 100%;
+}
+
+/* Form input safety */
+input, textarea, select, button {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+::selection {
+  background-color: #a078ff;
+  color: #340080;
+}
+
+/* Signal Glow ?" animated pulsing glow */
+.signal-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 15px rgba(160, 120, 255, 0.3); }
+  50%       { box-shadow: 0 0 25px rgba(160, 120, 255, 0.6); }
+}
+
+/* Glass Panel */
+.glass-panel {
+  background-color: rgba(20, 20, 22, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Material Symbol utilities */
+.icon-filled {
+  font-variation-settings: 'FILL' 1;
+}
+.icon-outline {
+  font-variation-settings: 'FILL' 0;
+}
+
+/* No scrollbar */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Custom scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+/* ============================================
+   EMPTY STATE LAYOUT SAFETY
+   Prevents word-by-word text wrapping inside
+   any flex/grid container regardless of context.
+   ============================================ */
+
+.empty-state-content {
+  width: 100%;
+  max-width: 420px;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
+  word-wrap: normal;
+}
+
+.empty-state-title {
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
+}
+
+.empty-state-description {
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
+  max-width: 380px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ============================================
+   REDUCED MOTION ACCESSIBILITY
+   ============================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================
+   FOCUS VISIBLE STYLES
+   ============================================ */
+:focus-visible {
+  outline: 2px solid rgba(208, 188, 255, 0.7);
+  outline-offset: 2px;
+}
+
+/* ============================================
+   CARD HOVER ELEVATION
+   ============================================ */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
