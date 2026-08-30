@@ -85,7 +85,7 @@ export async function createUserProfile(
       ],
     };
 
-    await setDoc(userRef, defaultProfile, { merge: true });
+    await setDoc(userRef, sanitizeForFirestore(defaultProfile), { merge: true });
   } catch (err) {
     console.error('[profileService] createUserProfile error:', err);
     throw err;
@@ -128,6 +128,8 @@ export async function claimUsername(uid: string, username: string): Promise<void
   }
 }
 
+import { sanitizeForFirestore } from '../../lib/firestoreUtils';
+
 /**
  * Updates an authenticated user's profile at users/{uid}
  */
@@ -147,10 +149,11 @@ export async function updateUserProfile(
 
   try {
     const userRef = doc(db, 'users', uid);
-    await setDoc(userRef, {
+    const sanitizedUpdates = sanitizeForFirestore({
       ...updates,
       updatedAt: serverTimestamp(),
-    }, { merge: true });
+    });
+    await setDoc(userRef, sanitizedUpdates, { merge: true });
   } catch (error: unknown) {
     console.error('[profileService] updateUserProfile error:', error);
     const firestoreError = error as { code?: string; message?: string };

@@ -1,4 +1,7 @@
-interface AvatarProps {
+import { useState, useEffect } from 'react';
+import type { SolvexaUser } from '../../types/user.types';
+
+export interface AvatarProps {
   src?: string | null;
   name?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
@@ -7,6 +10,36 @@ interface AvatarProps {
   isOnline?: boolean;
   className?: string;
   onClick?: () => void;
+}
+
+/**
+ * Resolves avatar source following priority order:
+ * 1. Firebase user's photoURL if available
+ * 2. Firestore user's photoURL / avatarUrl / profileImage / avatar field
+ * 3. Fallback to null (which triggers initials avatar)
+ */
+export function resolveAvatarSrc(
+  user?: Partial<SolvexaUser> | { photoURL?: string | null; avatarUrl?: string | null; profileImage?: string | null; avatar?: string | null } | null,
+  firebaseUser?: { photoURL?: string | null } | null
+): string | null {
+  if (firebaseUser?.photoURL && typeof firebaseUser.photoURL === 'string' && firebaseUser.photoURL.trim()) {
+    const val = firebaseUser.photoURL.trim();
+    if (val !== 'null' && val !== 'undefined') return val;
+  }
+
+  if (user) {
+    const candidate =
+      user.photoURL ||
+      (user as any).avatarUrl ||
+      (user as any).profileImage ||
+      (user as any).avatar;
+    if (candidate && typeof candidate === 'string' && candidate.trim()) {
+      const val = candidate.trim();
+      if (val !== 'null' && val !== 'undefined') return val;
+    }
+  }
+
+  return null;
 }
 
 export function Avatar({
@@ -19,6 +52,13 @@ export function Avatar({
   className = '',
   onClick,
 }: AvatarProps) {
+  const [hasError, setHasError] = useState(false);
+
+  // Reset error when src changes
+  useEffect(() => {
+    setHasError(false);
+  }, [src]);
+
   const sizeMap = {
     xs: 'w-6 h-6 text-[10px]',
     sm: 'w-8 h-8 text-xs',
@@ -37,27 +77,33 @@ export function Avatar({
     '2xl': 'p-1.5',
   }[size];
 
-  const initials = name
-    .split(' ')
-    .map((n) => n[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
+  const cleanName = (name || 'User').trim();
+  const parts = cleanName.split(/\s+/).filter(Boolean);
+  const initials = parts.length >= 2
+    ? (parts[0][0] + parts[1][0]).toUpperCase()
+    : (parts[0]?.[0] || 'U').toUpperCase();
 
-  const avatarContent = src ? (
-    <img
-      src={src}
-      alt={name}
-      className={`w-full h-full object-cover rounded-full select-none bg-surface-container`}
-      onError={(e) => {
-        // Fallback to initials if image fails
-        e.currentTarget.style.display = 'none';
-      }}
-    />
-  ) : (
-    <div className="w-full h-full rounded-full bg-gradient-to-tr from-primary-container/40 to-secondary-container/40 flex items-center justify-center font-bold text-on-surface border border-white/10">
+  const validUrl =
+    typeof src === 'string' &&
+    src.trim().length > 0 &&
+    src.trim() !== 'null' &&
+    src.trim() !== 'undefined'
+      ? src.trim()
+      : null;
+
+  const showFallback = !validUrl || hasError;
+
+  const avatarContent = showFallback ? (
+    <div className="w-full h-full rounded-full bg-gradient-to-tr from-purple-900/70 via-indigo-900/60 to-cyan-900/60 flex items-center justify-center font-bold text-white border border-white/10 select-none">
       {initials}
     </div>
+  ) : (
+    <img
+      src={validUrl}
+      alt={cleanName}
+      className="w-full h-full object-cover rounded-full select-none bg-surface-container"
+      onError={() => setHasError(true)}
+    />
   );
 
   return (
@@ -93,3 +139,4 @@ export function Avatar({
     </div>
   );
 }
+

@@ -15,11 +15,14 @@ import { db, auth } from '../firebase/config';
 import type { SignalVideo } from '../../types/signal.types';
 import { mapFirestoreError } from '../../lib/errors';
 
+import { sanitizeForFirestore } from '../../lib/firestoreUtils';
+import { getSignalThumbnail } from '../storage/mediaUpload';
+
 const SIGNALS_COLLECTION = 'signals';
 
 /**
  * Creates a new signal in Firestore under signals/{signalId}
- * Enforces authorId === auth.currentUser.uid
+ * Enforces authorId === auth.currentUser.uid and strips undefined values
  */
 export async function createSignalInFirestore(signal: SignalVideo): Promise<void> {
   const currentUser = auth.currentUser;
@@ -28,15 +31,22 @@ export async function createSignalInFirestore(signal: SignalVideo): Promise<void
   }
 
   try {
+    const derivedThumb = getSignalThumbnail(signal.thumbnailUrl, signal.videoUrl) || signal.thumbnailUrl || null;
+
     const signalRef = doc(db, SIGNALS_COLLECTION, signal.id);
-    const signalData = {
+    const rawData = {
       ...signal,
+      thumbnailUrl: derivedThumb,
       authorId: currentUser.uid,
-      createdAt: new Date().toISOString(),
+      authorName: signal.authorName || currentUser.displayName || 'Solvexa Pioneer',
+      authorUsername: signal.authorUsername || currentUser.displayName?.toLowerCase().replace(/\s+/g, '_') || 'pioneer',
+      authorAvatar: signal.authorAvatar || currentUser.photoURL || null,
+      createdAt: signal.createdAt || new Date().toISOString(),
       updatedAt: serverTimestamp(),
     };
 
-    await setDoc(signalRef, signalData);
+    const sanitizedData = sanitizeForFirestore(rawData);
+    await setDoc(signalRef, sanitizedData);
   } catch (error: unknown) {
     console.error('[signalService] createSignal error:', error);
     const firestoreError = error as { code?: string; message?: string };
@@ -100,10 +110,12 @@ export async function updateSignalInFirestore(
       throw new Error('You do not have permission to edit this signal.');
     }
 
-    await updateDoc(signalRef, {
+    const sanitizedUpdates = sanitizeForFirestore({
       ...updates,
       updatedAt: serverTimestamp(),
     });
+
+    await updateDoc(signalRef, sanitizedUpdates);
   } catch (error: unknown) {
     console.error('[signalService] updateSignal error:', error);
     const firestoreError = error as { code?: string; message?: string };

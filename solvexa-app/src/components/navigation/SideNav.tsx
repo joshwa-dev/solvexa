@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../features/auth/AuthContext';
 import { dataStore } from '../../services/store/dataStore';
+import { Avatar, resolveAvatarSrc } from '../common/Avatar';
 
 interface NavItem {
   path: string;
@@ -12,12 +13,14 @@ interface NavItem {
 
 export function SideNav() {
   const { solvexaUser, firebaseUser, dataMode, signOut } = useAuth();
-  const navigate = useNavigate();
+  const [unreadMessages, setUnreadMessages] = useState<number>(0);
+  const [unreadNotifs, setUnreadNotifs] = useState<number>(0);
   const [signingOut, setSigningOut] = useState(false);
-  const [unreadNotifs, setUnreadNotifs] = useState(0);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const update = () => {
+      setUnreadMessages(dataStore.getUnreadMessageCount());
       setUnreadNotifs(dataStore.getUnreadNotificationCount());
     };
     update();
@@ -41,12 +44,17 @@ export function SideNav() {
     { path: '/spaces', name: 'Spaces', icon: 'hub' },
     { path: '/orbit', name: 'My Orbit', icon: 'all_inclusive' },
     { path: '/signal-map', name: 'Signal Map', icon: 'insights' },
-    { path: '/messages', name: 'Nexus', icon: 'mail', badgeCount: 1 },
-    { path: '/notifications', name: 'Notifications', icon: 'notifications', badgeCount: unreadNotifs },
+    {
+      path: '/messages',
+      name: 'Nexus',
+      icon: 'mail',
+      badgeCount: unreadMessages > 0 ? unreadMessages : undefined,
+    },
+    { path: '/notifications', name: 'Notifications', icon: 'notifications', badgeCount: unreadNotifs > 0 ? unreadNotifs : undefined },
     { path: '/saved', name: 'Saved', icon: 'bookmark' },
   ];
 
-  const avatarUrl = solvexaUser?.photoURL || firebaseUser?.photoURL || null;
+  const avatarUrl = resolveAvatarSrc(solvexaUser, firebaseUser);
   const displayName = solvexaUser?.displayName || firebaseUser?.displayName || 'Solvexa User';
   const username = solvexaUser?.username || 'user';
 
@@ -85,15 +93,7 @@ export function SideNav() {
           to="/orbit"
           className="mt-3 flex items-center gap-3 p-2 rounded-xl bg-white/[0.03] border border-white/5 hover:border-primary/30 transition-all group"
         >
-          <div className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-primary/20">
-            {avatarUrl ? (
-              <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center font-bold text-xs text-primary">
-                {displayName[0]}
-              </div>
-            )}
-          </div>
+          <Avatar src={avatarUrl} name={displayName} size="sm" />
           <div className="flex flex-col min-w-0">
             <span className="text-on-surface font-semibold text-xs truncate group-hover:text-primary transition-colors">{displayName}</span>
             <span className="text-on-surface-variant text-[11px] truncate">@{username}</span>

@@ -123,13 +123,14 @@ export async function uploadToCloudinary(
     throw new Error(validation.error);
   }
 
-  const resourceType = validation.type === 'video' ? 'video' : 'image';
-  const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`;
+  // Use auto/upload endpoint for maximum compatibility with both images and videos
+  const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
 
   const formData = new FormData();
   formData.append('file', file);
   formData.append('upload_preset', uploadPreset);
   formData.append('folder', folder);
+  formData.append('resource_type', 'auto');
 
   return new Promise<CloudinaryUploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -198,4 +199,78 @@ export async function uploadMedia(
 
   const folder = folderMap[context] || `solvexa/users/${uid}/uploads`;
   return uploadToCloudinary(file, folder, onProgress);
+}
+
+/**
+ * Derives a static JPEG thumbnail from a Cloudinary video URL.
+ *
+ * Cloudinary video poster frames are served under the /video/upload/ endpoint
+ * (NOT /image/upload/, which returns 404 for video assets) with an image
+ * transformation and .jpg extension:
+ *
+ * Example:
+ *   Original: https://res.cloudinary.com/{cloud}/video/upload/v12345/solvexa/signals/my-video.mp4
+ *   Poster:   https://res.cloudinary.com/{cloud}/video/upload/so_0.5,w_800,c_limit,f_jpg/v12345/solvexa/signals/my-video.jpg
+ */
+export function getCloudinaryVideoThumbnail(videoUrl: string | null | undefined): string | null {
+  if (!videoUrl) return null;
+
+  // If it's already an image URL (jpg, png, webp, etc.), return it directly
+  if (/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i.test(videoUrl)) {
+    return videoUrl;
+  }
+
+  // Must be a Cloudinary res URL containing /video/upload/
+  if (videoUrl.includes('res.cloudinary.com') && videoUrl.includes('/video/upload/')) {
+    try {
+      // In Cloudinary, a video frame poster is served under /video/upload/ with .jpg extension
+      return videoUrl
+        .replace('/video/upload/', '/video/upload/so_0.5,w_800,c_limit,f_jpg/')
+        .replace(/\.(mp4|webm|mov|avi|mkv|m4v)(\?.*)?$/i, '.jpg');
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Returns the best available thumbnail URL for a signal.
+ *
+ * Priority:
+ *  1. thumbnailUrl if it looks like an image URL (not a video extension)
+ *  2. Cloudinary-derived poster from thumbnailUrl (if it was accidentally saved as .mp4)
+ *  3. Cloudinary-derived poster from videoUrl
+ *  4. videoUrl if it's already an image URL
+ *  5. null (caller should show fallback UI)
+ */
+export function getSignalThumbnail(
+  thumbnailUrl: string | null | undefined,
+  videoUrl: string | null | undefined
+): string | null {
+  const isVideoExtension = (url: string) =>
+    /\.(mp4|webm|mov|avi|mkv|m4v)(\?.*)?$/i.test(url);
+
+  // 1. If thumbnailUrl exists and is a valid image (not a video extension), use it directly
+  if (thumbnailUrl && !isVideoExtension(thumbnailUrl)) {
+    return thumbnailUrl;
+  }
+
+  // 2. If thumbnailUrl is a video URL (from previous upload bug), derive a Cloudinary poster
+  if (thumbnailUrl && isVideoExtension(thumbnailUrl)) {
+    const derived = getCloudinaryVideoThumbnail(thumbnailUrl);
+    if (derived) return derived;
+  }
+
+  // 3. Try to derive from videoUrl
+  if (videoUrl) {
+    if (!isVideoExtension(videoUrl)) {
+      return videoUrl; // It's an image signal
+    }
+    const derived = getCloudinaryVideoThumbnail(videoUrl);
+    if (derived) return derived;
+  }
+
+  return null;
 }

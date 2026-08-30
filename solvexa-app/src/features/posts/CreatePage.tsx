@@ -18,6 +18,10 @@ export default function CreatePage() {
   const [pollOptions, setPollOptions] = useState(['', '']);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [localPreviewUrl, setLocalPreviewUrl] = useState<string | null>(null);
+  const [selectedFileObj, setSelectedFileObj] = useState<File | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const spaces = dataStore.getSpaces();
@@ -26,17 +30,56 @@ export default function CreatePage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setSelectedFileObj(file);
+    const preview = URL.createObjectURL(file);
+    setLocalPreviewUrl(preview);
+    setUploadError(null);
+
     try {
       setIsUploading(true);
-      const uploaded = await uploadMediaFile(file, 'posts');
+      setUploadProgress(10);
+      const uploaded = await uploadMediaFile(file, 'posts', (pct) => {
+        setUploadProgress(pct);
+      });
       setSelectedMedia(uploaded);
       setPostType(uploaded.type === 'video' ? 'text' : 'image');
       setIsUploading(false);
+      setUploadProgress(100);
     } catch (err: unknown) {
       const e = err as Error;
-      alert(e.message || 'Media upload error');
+      setUploadError(e.message || 'Media upload error. Please retry.');
       setIsUploading(false);
     }
+  };
+
+  const handleRetryUpload = async () => {
+    if (!selectedFileObj) return;
+    try {
+      setIsUploading(true);
+      setUploadError(null);
+      setUploadProgress(10);
+      const uploaded = await uploadMediaFile(selectedFileObj, 'posts', (pct) => {
+        setUploadProgress(pct);
+      });
+      setSelectedMedia(uploaded);
+      setPostType(uploaded.type === 'video' ? 'text' : 'image');
+      setIsUploading(false);
+      setUploadProgress(100);
+    } catch (err: unknown) {
+      const e = err as Error;
+      setUploadError(e.message || 'Media upload error. Please retry.');
+      setIsUploading(false);
+    }
+  };
+
+  const handleClearMedia = () => {
+    if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
+    setLocalPreviewUrl(null);
+    setSelectedMedia(null);
+    setSelectedFileObj(null);
+    setUploadError(null);
+    setUploadProgress(0);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleSubmit = (e: FormEvent) => {
@@ -58,18 +101,26 @@ export default function CreatePage() {
       .map((t) => t.trim().replace(/^#/, ''))
       .filter(Boolean);
 
-    dataStore.createPost({
-      content: content.trim(),
-      media: selectedMedia ? [{ url: selectedMedia.url, type: selectedMedia.type }] : [],
-      postType: formattedPoll ? 'poll' : selectedMedia ? selectedMedia.type : 'text',
-      spaceId: spaceId || null,
-      spaceName: space?.name,
-      topics: parsedTopics.length > 0 ? parsedTopics : ['SignalFlow'],
-      pollOptions: formattedPoll,
-    });
+    try {
+      dataStore.createPost({
+        content: content.trim(),
+        media: selectedMedia ? [{ url: selectedMedia.url, type: selectedMedia.type }] : [],
+        postType: formattedPoll ? 'poll' : selectedMedia ? selectedMedia.type : 'text',
+        spaceId: spaceId || null,
+        spaceName: space?.name || null,
+        topics: parsedTopics.length > 0 ? parsedTopics : ['SignalFlow'],
 
-    setIsSubmitting(false);
-    navigate('/pulse');
+        pollOptions: formattedPoll,
+      });
+
+      handleClearMedia();
+      setIsSubmitting(false);
+      navigate('/pulse');
+    } catch (err: unknown) {
+      const e = err as Error;
+      setIsSubmitting(false);
+      setUploadError(e.message || 'Failed to create broadcast. Please try again.');
+    }
   };
 
   return (
@@ -119,38 +170,76 @@ export default function CreatePage() {
           className="hidden"
         />
 
-        {/* Selected Media Preview */}
-        {selectedMedia && (
-          <div className="relative rounded-2xl overflow-hidden border border-white/15 bg-black/60 max-h-[380px] flex items-center justify-center p-2 group">
-            {selectedMedia.type === 'video' ? (
+        {/* Selected Media Preview & Upload Progress */}
+        {(localPreviewUrl || selectedMedia) && (
+          <div className="relative rounded-2xl overflow-hidden border border-white/15 bg-black/60 max-h-[380px] flex flex-col items-center justify-center p-2 group">
+            {selectedFileObj?.type.startsWith('video/') || selectedMedia?.type === 'video' ? (
               <video
-                src={selectedMedia.url}
+                src={localPreviewUrl || selectedMedia?.url}
                 controls
-                className="max-h-[360px] w-auto h-auto rounded-xl object-contain"
+                className="max-h-[340px] w-auto h-auto rounded-xl object-contain"
               />
             ) : (
               <img
-                src={selectedMedia.url}
+                src={localPreviewUrl || selectedMedia?.url}
                 alt="Upload preview"
-                className="max-h-[360px] w-auto h-auto rounded-xl object-contain"
+                className="max-h-[340px] w-auto h-auto rounded-xl object-contain"
               />
             )}
-            <div className="absolute top-4 right-4 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="px-3 py-1 rounded-xl bg-black/80 hover:bg-black text-white text-xs font-bold backdrop-blur-md border border-white/20"
-              >
-                Replace
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedMedia(null)}
-                className="p-1.5 rounded-full bg-black/80 hover:bg-black text-white backdrop-blur-md border border-white/20"
-              >
-                <span className="material-symbols-outlined text-sm">close</span>
-              </button>
-            </div>
+
+            {/* Progress overlay */}
+            {isUploading && (
+              <div className="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center gap-3 p-4 z-20">
+                <div className="w-10 h-10 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                <div className="text-center space-y-1">
+                  <span className="text-xs font-bold text-white block">Uploading Media to Cloudinary...</span>
+                  <span className="text-[11px] font-semibold text-primary">{uploadProgress}%</span>
+                </div>
+                <div className="w-48 h-1.5 rounded-full bg-white/20 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-[#7a00ff] to-[#0066ff] transition-all duration-150"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Upload Error Banner with Retry */}
+            {uploadError && !isUploading && (
+              <div className="absolute inset-x-3 bottom-3 p-3 rounded-xl bg-red-950/90 border border-red-500/40 backdrop-blur-md flex items-center justify-between z-20">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-red-400 text-sm">error</span>
+                  <span className="text-xs text-red-200 font-medium">{uploadError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRetryUpload}
+                  className="px-3 py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-bold transition-all"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {!isUploading && (
+              <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-3 py-1 rounded-xl bg-black/80 hover:bg-black text-white text-xs font-bold backdrop-blur-md border border-white/20"
+                >
+                  Replace
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearMedia}
+                  className="p-1.5 rounded-full bg-black/80 hover:bg-black text-white backdrop-blur-md border border-white/20"
+                  title="Remove media"
+                >
+                  <span className="material-symbols-outlined text-sm">close</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 

@@ -394,72 +394,96 @@ export default function MomentsPage() {
           className="absolute right-0 top-16 bottom-24 w-1/3 z-20 cursor-pointer"
         />
 
-        {/* 1. Multi-Segment Top Progress Indicators */}
-        <div className="relative z-30 px-4 pt-3.5 flex items-center gap-1.5">
-          {moments.map((m, idx) => {
-            let fillPct = 0;
-            if (idx < currentIndex) fillPct = 100;
-            else if (idx === currentIndex) fillPct = progress;
+        {/* =========================================================================
+            1. TOP HEADER & PROGRESS BARS (Pinned to TOP with subtle gradient)
+           ========================================================================= */}
+        <div className="relative z-30 flex flex-col pt-3.5 px-4 pb-4 space-y-2 bg-gradient-to-b from-black/85 via-black/40 to-transparent pointer-events-auto">
+          {/* Multi-Segment Top Progress Indicators */}
+          <div className="flex items-center gap-1.5 w-full">
+            {moments.map((m, idx) => {
+              let fillPct = 0;
+              if (idx < currentIndex) fillPct = 100;
+              else if (idx === currentIndex) fillPct = progress;
 
-            return (
-              <div key={m.momentId} className="h-1 flex-1 rounded-full bg-white/25 overflow-hidden">
-                <div
-                  className="h-full bg-white transition-all duration-75 ease-linear"
-                  style={{ width: `${fillPct}%` }}
-                />
-              </div>
-            );
-          })}
-        </div>
+              return (
+                <div key={m.momentId} className="h-1 flex-1 rounded-full bg-white/25 overflow-hidden">
+                  <div
+                    className="h-full bg-white transition-all duration-75 ease-linear"
+                    style={{ width: `${fillPct}%` }}
+                  />
+                </div>
+              );
+            })}
+          </div>
 
-        {/* 2. Story Header (Author Profile & Controls) */}
-        <div className="relative z-30 px-4 pt-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <Avatar src={currentMoment.author.photoURL} name={currentMoment.author.displayName} size="sm" />
-            <div className="min-w-0">
-              <div className="text-xs font-bold text-white truncate max-w-[170px]">
-                {currentMoment.author.displayName}
-              </div>
-              <div className="text-[10px] text-zinc-300 font-medium">
-                {new Date(currentMoment.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • 24h Moment
+          {/* Author Header & Story Controls */}
+          <div className="flex items-center justify-between w-full pt-1">
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(`/profile/${currentMoment.author.username || currentMoment.author.uid}`);
+              }}
+              className="flex items-center gap-2.5 cursor-pointer group"
+            >
+              <Avatar src={currentMoment.author.photoURL} name={currentMoment.author.displayName} size="sm" />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white group-hover:text-primary transition-colors truncate max-w-[170px]">
+                  {currentMoment.author.displayName}
+                </div>
+                <div className="text-[10px] text-zinc-300 font-medium">
+                  {new Date(currentMoment.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • 24h Moment
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            {isVideo && (
+            <div className="flex items-center gap-2">
+              {isVideo && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsMuted(!isMuted);
+                  }}
+                  className="p-1.5 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-md border border-white/10 transition-colors"
+                  title={isMuted ? 'Unmute' : 'Mute'}
+                >
+                  <span className="material-symbols-outlined text-sm">
+                    {isMuted ? 'volume_off' : 'volume_up'}
+                  </span>
+                </button>
+              )}
+
+              {isAuthor && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsViewersModalOpen(true);
+                  }}
+                  className="px-2.5 py-1 rounded-full bg-black/60 text-[10px] font-bold text-primary border border-primary/30 flex items-center gap-1 hover:bg-black/80 transition-all cursor-pointer"
+                  title="Inspect Viewers"
+                >
+                  <span className="material-symbols-outlined text-xs">visibility</span>
+                  <span>{currentMoment.viewCount || 1} Views</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setIsMuted(!isMuted);
+                  navigate('/pulse');
                 }}
-                className="p-1.5 rounded-full bg-black/50 text-white backdrop-blur-md border border-white/10"
+                className="p-1.5 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-md border border-white/10 transition-colors"
+                title="Close Moment"
               >
-                <span className="material-symbols-outlined text-sm">
-                  {isMuted ? 'volume_off' : 'volume_up'}
-                </span>
+                <span className="material-symbols-outlined text-sm">close</span>
               </button>
-            )}
-
-            {isAuthor && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsViewersModalOpen(true);
-                }}
-                className="px-2.5 py-1 rounded-full bg-black/60 text-[10px] font-bold text-primary border border-primary/30 flex items-center gap-1 hover:bg-black/80 transition-all cursor-pointer"
-                title="Inspect Viewers"
-              >
-                <span className="material-symbols-outlined text-xs">visibility</span>
-                <span>{currentMoment.viewCount || 1} Views</span>
-              </button>
-            )}
+            </div>
           </div>
         </div>
 
-        {/* 3. Media Presentation Layer */}
+        {/* 2. Media Presentation Layer */}
         <div className="absolute inset-0 w-full h-full z-10 flex items-center justify-center bg-black">
           {currentMoment.media ? (
             isVideo ? (
@@ -493,25 +517,24 @@ export default function MomentsPage() {
               </p>
             </div>
           )}
-
-          {/* Bottom vignette overlay */}
-          <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none" />
         </div>
 
-        {/* 4. Text Caption Overlay (if image/video with caption) */}
-        {currentMoment.media && currentMoment.text && (
-          <div className="relative z-30 px-5 pb-2 text-center pointer-events-none">
-            <p className="text-xs sm:text-sm font-semibold text-white bg-black/60 px-3.5 py-2 rounded-2xl backdrop-blur-md inline-block border border-white/10">
-              {currentMoment.text}
-            </p>
-          </div>
-        )}
-
-        {/* 5. Footer: Interactive Reply & Quick Reactions */}
+        {/* =========================================================================
+            3. BOTTOM INTERACTIVE FOOTER (Caption, Quick Reactions & Reply Form)
+           ========================================================================= */}
         <div
-          className="relative z-30 p-3.5 space-y-2.5"
+          className="relative z-30 flex flex-col p-4 space-y-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent pointer-events-auto"
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Optional Caption Overlay */}
+          {currentMoment.media && currentMoment.text && (
+            <div className="text-center pointer-events-none pb-1">
+              <p className="text-xs sm:text-sm font-semibold text-white bg-black/60 px-3.5 py-1.5 rounded-2xl backdrop-blur-md inline-block border border-white/10">
+                {currentMoment.text}
+              </p>
+            </div>
+          )}
+
           {/* Quick Reaction Bar */}
           <div className="flex items-center justify-around px-2">
             {[

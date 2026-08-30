@@ -70,6 +70,7 @@ export default function MessagesPage() {
   // Load messages for the active conversation
   useEffect(() => {
     if (activeConversationId) {
+      dataStore.markConversationAsRead(activeConversationId);
       const msgs = dataStore.getMessages(activeConversationId);
       setMessages(msgs);
 
@@ -142,14 +143,22 @@ export default function MessagesPage() {
   };
 
   const handleDeleteForMe = () => {
-    if (activeConversationId && selectedMessageForDelete) {
+    if (
+      activeConversationId &&
+      selectedMessageForDelete &&
+      selectedMessageForDelete.senderId === currentUid
+    ) {
       dataStore.deleteMessageForMe(activeConversationId, selectedMessageForDelete.messageId);
       setSelectedMessageForDelete(null);
     }
   };
 
   const handleDeleteForEveryone = () => {
-    if (activeConversationId && selectedMessageForDelete) {
+    if (
+      activeConversationId &&
+      selectedMessageForDelete &&
+      selectedMessageForDelete.senderId === currentUid
+    ) {
       dataStore.deleteMessageForEveryone(activeConversationId, selectedMessageForDelete.messageId);
       setSelectedMessageForDelete(null);
     }
@@ -304,14 +313,14 @@ export default function MessagesPage() {
                       className={`flex flex-col w-full group ${isMe ? 'items-end' : 'items-start'}`}
                     >
                       <div className="flex items-center gap-2 max-w-[min(82%,680px)]">
-                        {/* Delete action trigger for message */}
-                        {!isDeleted && (
+                        {/* Delete action trigger ONLY for sent messages */}
+                        {!isDeleted && isMe && (
                           <button
                             type="button"
                             onClick={() => setSelectedMessageForDelete(msg)}
                             className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg bg-white/5 hover:bg-error/20 text-zinc-500 hover:text-error transition-all"
-                            title="Delete Message"
-                            aria-label="Delete Message"
+                            title="Delete Sent Message"
+                            aria-label="Delete Sent Message"
                           >
                             <span className="material-symbols-outlined text-sm">delete</span>
                           </button>
@@ -361,7 +370,11 @@ export default function MessagesPage() {
                                     src={msg.media.url}
                                     alt="Attachment"
                                     className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none';
+                                    }}
                                   />
+
                                 </div>
                               )}
 
@@ -453,8 +466,14 @@ export default function MessagesPage() {
           <div className="flex-1 flex flex-col items-center justify-center p-8">
             <EmptyState
               icon="forum"
-              title="Select a conversation"
-              description="Choose a thread from the left panel to start sending messages."
+              title={conversations.length === 0 ? 'No conversations yet' : 'Select a conversation'}
+              description={
+                conversations.length === 0
+                  ? 'Start a transmission with pioneers and researchers across the Solvexa mesh.'
+                  : 'Choose a thread from the left panel to continue your conversation.'
+              }
+              actionLabel={conversations.length === 0 ? 'Find Pioneers' : undefined}
+              onAction={conversations.length === 0 ? () => navigate('/explore') : undefined}
             />
           </div>
         )}

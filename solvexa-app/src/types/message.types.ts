@@ -52,6 +52,8 @@ export interface Message {
   isDeleted?: boolean;
   deletedFor?: string[];
   isDeletedForEveryone?: boolean;
+  read?: boolean;
+  readAt?: any;
   readBy?: Record<string, any>;
   reactions?: Record<string, string[]>;
 }

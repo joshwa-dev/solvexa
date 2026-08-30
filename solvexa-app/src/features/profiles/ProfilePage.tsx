@@ -10,9 +10,11 @@ import { Avatar } from '../../components/common/Avatar';
 import { SignalChip } from '../../components/common/SignalChip';
 import { Modal } from '../../components/common/Modal';
 import { MediaViewer, type MediaViewerItem } from '../../components/common/MediaViewer';
-import { uploadMediaFile } from '../../services/storage/mediaUpload';
-import { updateUserProfile } from '../../services/auth/profileService';
+import { uploadMediaFile, getSignalThumbnail } from '../../services/storage/mediaUpload';
+import { updateUserProfile, getUserProfile, getUserByUsername } from '../../services/auth/profileService';
 import { EmptyState } from '../../components/common/EmptyState';
+import { formatRelativeTime } from '../../lib/firestoreUtils';
+
 
 export default function ProfilePage() {
   const { username } = useParams<{ username?: string }>();
@@ -47,15 +49,43 @@ export default function ProfilePage() {
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
+  const [isLoadingProfile, setIsLoadingProfile] = useState(false);
+
   // Orbit Radar Tier State
   const [orbitTier, setOrbitTier] = useState<'all' | 'inner' | 'extended'>('all');
 
   // Lightbox Media Viewer
   const [lightboxMedia, setLightboxMedia] = useState<MediaViewerItem | null>(null);
 
-  const isOwnProfile = !username || username === solvexaUser?.username || username === solvexaUser?.uid;
+  // Post Edit/Delete States for My Orbit
+  const [activeMenuPostId, setActiveMenuPostId] = useState<string | null>(null);
+  const [editingPost, setEditingPost] = useState<Post | null>(null);
+  const [editPostContent, setEditPostContent] = useState('');
+  const [editPostTopics, setEditPostTopics] = useState('');
+  const [isSavingPostEdit, setIsSavingPostEdit] = useState(false);
+  const [editPostError, setEditPostError] = useState<string | null>(null);
+  const [deletingPost, setDeletingPost] = useState<Post | null>(null);
+  const [isDeletingPost, setIsDeletingPost] = useState(false);
+
+  // Signal Edit/Delete States for My Orbit
+  const [activeMenuSignalId, setActiveMenuSignalId] = useState<string | null>(null);
+  const [editingSignal, setEditingSignal] = useState<SignalVideo | null>(null);
+  const [editSignalCaption, setEditSignalCaption] = useState('');
+  const [editSignalTopics, setEditSignalTopics] = useState('');
+  const [isSavingSignalEdit, setIsSavingSignalEdit] = useState(false);
+  const [editSignalError, setEditSignalError] = useState<string | null>(null);
+  const [deletingSignal, setDeletingSignal] = useState<SignalVideo | null>(null);
+  const [isDeletingSignal, setIsDeletingSignal] = useState(false);
+
+  const targetIdentifier = username?.trim() || '';
+  const isOwnProfile =
+    !targetIdentifier ||
+    (Boolean(solvexaUser?.uid) && targetIdentifier === solvexaUser?.uid) ||
+    (Boolean(solvexaUser?.username) && targetIdentifier.toLowerCase() === solvexaUser?.username.toLowerCase());
 
   useEffect(() => {
+    let isMounted = true;
+
     const syncProfile = () => {
       if (isOwnProfile) {
         const me = solvexaUser || dataStore.getCurrentUser();
@@ -73,20 +103,74 @@ export default function ProfilePage() {
           );
         }
       } else {
-        const found = dataStore.getUsers().find((u) => u.username === username || u.uid === username);
+        const found = dataStore.getUsers().find(
+          (u) => u.uid === targetIdentifier || (u.username && u.username.toLowerCase() === targetIdentifier.toLowerCase())
+        );
         if (found) {
           setUser(found);
-        } else {
-          const alt = dataStore.getUser(username!);
-          setUser(alt || null);
+        }
+
+        if (targetIdentifier) {
+          setIsLoadingProfile(true);
+          // Try loading by UID first, then by normalized username
+          getUserProfile(targetIdentifier)
+            .then((docUser) => {
+              if (!isMounted) return;
+              if (docUser) {
+                setUser(docUser);
+                setIsLoadingProfile(false);
+              } else {
+                return getUserByUsername(targetIdentifier);
+              }
+            })
+            .then((byUsername) => {
+              if (!isMounted) return;
+              if (byUsername) {
+                setUser(byUsername);
+              } else if (!found) {
+                // If in DEMO mode, allow mock fallback; in REAL mode, don't fabricate fake users
+                const alt = dataStore.getDataMode() === 'DEMO' ? dataStore.getUser(targetIdentifier) : null;
+                setUser(alt || null);
+              }
+            })
+            .catch((err) => {
+              if (!isMounted) return;
+              console.warn('[ProfilePage] Failed to fetch Firestore user:', err);
+              if (!found) setUser(null);
+            })
+            .finally(() => {
+              if (isMounted) setIsLoadingProfile(false);
+            });
         }
       }
     };
 
     syncProfile();
     const unsub = dataStore.subscribe(syncProfile);
-    return () => unsub();
-  }, [username, isOwnProfile, solvexaUser]);
+    return () => {
+      isMounted = false;
+      unsub();
+    };
+  }, [targetIdentifier, isOwnProfile, solvexaUser]);
+
+
+  if (isLoadingProfile) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0B] text-white p-4 sm:p-6 md:p-8 max-w-5xl mx-auto space-y-6 pb-24 animate-pulse">
+        <div className="h-44 sm:h-56 rounded-3xl bg-white/5 border border-white/10" />
+        <div className="p-6 rounded-3xl bg-[#141416]/90 border border-white/10 space-y-4">
+          <div className="flex items-center gap-4">
+            <div className="w-20 h-20 rounded-full bg-white/10" />
+            <div className="space-y-2 flex-1">
+              <div className="w-40 h-5 rounded-lg bg-white/10" />
+              <div className="w-24 h-3 rounded-lg bg-white/5" />
+            </div>
+          </div>
+          <div className="w-full h-12 rounded-xl bg-white/5" />
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -102,10 +186,11 @@ export default function ProfilePage() {
     );
   }
 
-  const userPosts = dataStore.getPosts().filter((p) => p.authorId === user.uid || (user.username && p.authorUsername === user.username));
-  const userSignals: SignalVideo[] = dataStore.getSignals().filter((s) => s.authorId === user.uid || (user.username && s.authorUsername === user.username));
-  const userMoments: MomentWithAuthor[] = dataStore.getMoments().filter((m) => m.author.uid === user.uid || (user.username && m.author.username === user.username));
+  const userPosts = dataStore.getPosts().filter((p) => p.authorId === user.uid || (user.username && p.authorUsername?.toLowerCase() === user.username.toLowerCase()));
+  const userSignals: SignalVideo[] = dataStore.getSignals().filter((s) => s.authorId === user.uid || (user.username && s.authorUsername?.toLowerCase() === user.username.toLowerCase()));
+  const userMoments: MomentWithAuthor[] = dataStore.getMoments().filter((m) => m.author.uid === user.uid || (user.username && m.author.username?.toLowerCase() === user.username.toLowerCase()));
   const savedPosts: Post[] = isOwnProfile ? dataStore.getSavedPosts() : [];
+
 
   // Orbit Radar Nodes
   const networkUsers = dataStore.getUsers().filter((u) => u.uid !== user.uid);
@@ -261,6 +346,116 @@ export default function ProfilePage() {
     navigate(`/messages?id=${conv.conversationId}`);
   };
 
+  // --- POST EDIT/DELETE HANDLERS FOR MY ORBIT ---
+  const handleOpenEditPost = (post: Post, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActiveMenuPostId(null);
+    setEditingPost(post);
+    setEditPostContent(post.content);
+    setEditPostTopics(post.topics ? post.topics.join(', ') : '');
+    setEditPostError(null);
+  };
+
+  const handleSavePostEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPost) return;
+    try {
+      setIsSavingPostEdit(true);
+      setEditPostError(null);
+      const parsed = editPostTopics.split(',').map((t) => t.trim().replace(/^#/, '')).filter(Boolean);
+      await dataStore.editPost(editingPost.postId, {
+        content: editPostContent.trim(),
+        topics: parsed.length > 0 ? parsed : editingPost.topics,
+      });
+      setIsSavingPostEdit(false);
+      setEditingPost(null);
+      setShareToast('Broadcast updated successfully.');
+      setTimeout(() => setShareToast(null), 3000);
+    } catch (err: unknown) {
+      const e = err as Error;
+      setIsSavingPostEdit(false);
+      setEditPostError(e.message || 'Failed to update post.');
+    }
+  };
+
+  const handleOpenDeletePost = (post: Post, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActiveMenuPostId(null);
+    setDeletingPost(post);
+  };
+
+  const handleConfirmDeletePost = async () => {
+    if (!deletingPost) return;
+    try {
+      setIsDeletingPost(true);
+      await dataStore.deletePost(deletingPost.postId);
+      setIsDeletingPost(false);
+      setDeletingPost(null);
+      setShareToast('Broadcast deleted from the mesh.');
+      setTimeout(() => setShareToast(null), 3000);
+    } catch (err: unknown) {
+      const e = err as Error;
+      setIsDeletingPost(false);
+      setShareToast(e.message || 'Delete failed.');
+      setTimeout(() => setShareToast(null), 3000);
+    }
+  };
+
+  // --- SIGNAL EDIT/DELETE HANDLERS FOR MY ORBIT ---
+  const handleOpenEditSignal = (sig: SignalVideo, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActiveMenuSignalId(null);
+    setEditingSignal(sig);
+    setEditSignalCaption(sig.caption);
+    setEditSignalTopics(sig.topics ? sig.topics.join(', ') : '');
+    setEditSignalError(null);
+  };
+
+  const handleSaveSignalEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSignal) return;
+    try {
+      setIsSavingSignalEdit(true);
+      setEditSignalError(null);
+      const parsed = editSignalTopics.split(',').map((t) => t.trim().replace(/^#/, '')).filter(Boolean);
+      await dataStore.editSignal(editingSignal.id, {
+        caption: editSignalCaption.trim(),
+        topics: parsed.length > 0 ? parsed : editingSignal.topics,
+      });
+      setIsSavingSignalEdit(false);
+      setEditingSignal(null);
+      setShareToast('Signal updated successfully.');
+      setTimeout(() => setShareToast(null), 3000);
+    } catch (err: unknown) {
+      const e = err as Error;
+      setIsSavingSignalEdit(false);
+      setEditSignalError(e.message || 'Failed to update signal.');
+    }
+  };
+
+  const handleOpenDeleteSignal = (sig: SignalVideo, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActiveMenuSignalId(null);
+    setDeletingSignal(sig);
+  };
+
+  const handleConfirmDeleteSignal = async () => {
+    if (!deletingSignal) return;
+    try {
+      setIsDeletingSignal(true);
+      await dataStore.deleteSignal(deletingSignal.id);
+      setIsDeletingSignal(false);
+      setDeletingSignal(null);
+      setShareToast('Signal deleted from the mesh.');
+      setTimeout(() => setShareToast(null), 3000);
+    } catch (err: unknown) {
+      const e = err as Error;
+      setIsDeletingSignal(false);
+      setShareToast(e.message || 'Delete failed.');
+      setTimeout(() => setShareToast(null), 3000);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0A0A0B] text-white p-3 sm:p-6 md:p-8 max-w-5xl mx-auto space-y-6 pb-24 select-none">
       {/* Toast Feedback */}
@@ -282,8 +477,12 @@ export default function ProfilePage() {
               src={user.coverPhotoURL}
               alt="Cover banner"
               className="w-full h-full object-cover"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
             />
           ) : (
+
             <div
               className="w-full h-full"
               style={{
@@ -617,15 +816,49 @@ export default function ProfilePage() {
                           <span className="text-[10px] text-zinc-400 font-normal">@{user.username}</span>
                         </div>
                         <div className="text-[10px] text-zinc-500">
-                          {new Date(post.createdAt).toLocaleDateString(undefined, {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
+                          {formatRelativeTime(post.createdAt)}
                         </div>
                       </div>
                     </div>
+
+                    {/* Author Edit/Delete Menu — verified strictly against authenticated UID */}
+                    {Boolean(solvexaUser?.uid && (post.authorId === solvexaUser.uid || (isOwnProfile && post.authorId === user.uid))) && (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveMenuPostId(activeMenuPostId === post.postId ? null : post.postId);
+                          }}
+                          className="p-1.5 rounded-xl text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
+                          title="More options"
+                        >
+                          <span className="material-symbols-outlined text-base">more_horiz</span>
+                        </button>
+
+                        {activeMenuPostId === post.postId && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute right-0 top-full mt-1.5 w-44 rounded-2xl bg-[#1c1b1c] border border-white/15 shadow-2xl p-1.5 z-40 animate-in fade-in space-y-1 text-xs"
+                          >
+                            <button
+                              onClick={(e) => handleOpenEditPost(post, e)}
+                              className="w-full px-3 py-2 rounded-xl text-left text-zinc-200 hover:bg-white/10 flex items-center gap-2"
+                            >
+                              <span className="material-symbols-outlined text-sm text-primary">edit</span>
+                              <span>Edit Broadcast</span>
+                            </button>
+                            <button
+                              onClick={(e) => handleOpenDeletePost(post, e)}
+                              className="w-full px-3 py-2 rounded-xl text-left text-error hover:bg-error/10 flex items-center gap-2"
+                            >
+                              <span className="material-symbols-outlined text-sm">delete</span>
+                              <span>Delete Broadcast</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Post Content */}
@@ -641,7 +874,8 @@ export default function ProfilePage() {
                           postId: post.postId,
                           authorName: user.displayName,
                           authorUsername: user.username,
-                          authorAvatar: user.photoURL || undefined,
+                          authorAvatar: user.photoURL || null,
+
                           caption: post.content,
                           createdAt: post.createdAt,
                           topics: post.topics,
@@ -690,11 +924,80 @@ export default function ProfilePage() {
               userSignals.map((sig) => (
                 <div
                   key={sig.id}
-                  onClick={() => navigate(`/signals`)}
-                  className="relative aspect-[9/16] rounded-2xl overflow-hidden border border-white/10 group cursor-pointer"
+                  className="relative aspect-[9/16] rounded-2xl overflow-hidden border border-white/10 group bg-zinc-950"
                 >
-                  <img src={sig.thumbnailUrl} alt={sig.caption} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex flex-col justify-end p-3">
+                  {(() => {
+                    const thumb = getSignalThumbnail(sig.thumbnailUrl, sig.videoUrl);
+                    return thumb ? (
+                      <img
+                        src={thumb}
+                        alt={sig.caption}
+                        onClick={() => navigate('/signals')}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 cursor-pointer"
+                        onError={(e) => {
+                          // Hide broken image and show a clean video placeholder
+                          const target = e.currentTarget;
+                          target.style.display = 'none';
+                          const placeholder = target.nextElementSibling as HTMLElement | null;
+                          if (placeholder) placeholder.style.display = 'flex';
+                        }}
+                      />
+                    ) : null;
+                  })()}
+                  {/* Clean fallback shown when img fails — never shows broken icon or caption */}
+                  <div
+                    style={{ display: getSignalThumbnail(sig.thumbnailUrl, sig.videoUrl) ? 'none' : 'flex' }}
+                    onClick={() => navigate('/signals')}
+                    className="w-full h-full flex flex-col items-center justify-center gap-2 bg-zinc-900 cursor-pointer group-hover:bg-zinc-800 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-3xl text-zinc-600">play_circle</span>
+                    <span className="text-[10px] text-zinc-500 font-medium text-center px-2 line-clamp-2">Video Signal</span>
+                  </div>
+
+                  {/* Top Right More Menu for Author — verified strictly against authenticated UID */}
+                  {Boolean(solvexaUser?.uid && (sig.authorId === solvexaUser.uid || (isOwnProfile && sig.authorId === user.uid))) && (
+                    <div className="absolute top-2.5 right-2.5 z-20">
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveMenuSignalId(activeMenuSignalId === sig.id ? null : sig.id);
+                        }}
+                        className="p-1.5 rounded-full bg-black/70 hover:bg-black text-white backdrop-blur-md border border-white/20 transition-all shadow-md"
+                        title="Signal options"
+                      >
+                        <span className="material-symbols-outlined text-sm">more_vert</span>
+                      </button>
+
+                      {activeMenuSignalId === sig.id && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="absolute right-0 top-full mt-1.5 w-40 rounded-2xl bg-[#1c1b1c] border border-white/15 shadow-2xl p-1.5 z-30 animate-in fade-in space-y-1 text-xs"
+                        >
+                          <button
+                            onClick={(e) => handleOpenEditSignal(sig, e)}
+                            className="w-full px-3 py-2 rounded-xl text-left text-zinc-200 hover:bg-white/10 flex items-center gap-2"
+                          >
+                            <span className="material-symbols-outlined text-sm text-primary">edit</span>
+                            <span>Edit Signal</span>
+                          </button>
+                          <button
+                            onClick={(e) => handleOpenDeleteSignal(sig, e)}
+                            className="w-full px-3 py-2 rounded-xl text-left text-error hover:bg-error/10 flex items-center gap-2"
+                          >
+                            <span className="material-symbols-outlined text-sm">delete</span>
+                            <span>Delete Signal</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div
+                    onClick={() => navigate('/signals')}
+                    className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent flex flex-col justify-end p-3 cursor-pointer pointer-events-auto"
+                  >
                     <div className="flex items-center gap-1 text-xs font-bold text-white">
                       <span className="material-symbols-outlined text-sm text-primary">sensors</span>
                       <span>{sig.resonanceCount}</span>
@@ -1145,6 +1448,186 @@ export default function ProfilePage() {
               <span className="text-zinc-300">Mesh Propagation (Shares)</span>
               <span className="font-bold text-white">+6 pts per share</span>
             </div>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Broadcast Post Modal */}
+      <Modal
+        isOpen={!!editingPost}
+        onClose={() => setEditingPost(null)}
+        title="Edit Broadcast"
+      >
+        <form onSubmit={handleSavePostEdit} className="space-y-4 py-2">
+          {editPostError && (
+            <div className="p-3 rounded-xl bg-error/10 border border-error/20 text-error text-xs">
+              {editPostError}
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+              Broadcast Content
+            </label>
+            <textarea
+              rows={4}
+              value={editPostContent}
+              onChange={(e) => setEditPostContent(e.target.value)}
+              placeholder="Update your broadcast transmission..."
+              className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl p-3 text-xs text-white placeholder:text-zinc-600 focus:outline-none resize-none"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+              Topics & Focus Tags (comma-separated)
+            </label>
+            <input
+              type="text"
+              value={editPostTopics}
+              onChange={(e) => setEditPostTopics(e.target.value)}
+              placeholder="e.g. QuantumFlow, SpatialUI, AI"
+              className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+            <button
+              type="button"
+              onClick={() => setEditingPost(null)}
+              className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSavingPostEdit || !editPostContent.trim()}
+              className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#7a00ff] to-[#0066ff] hover:opacity-90 disabled:opacity-40 transition-all"
+            >
+              {isSavingPostEdit ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Delete Broadcast Post Modal */}
+      <Modal
+        isOpen={!!deletingPost}
+        onClose={() => setDeletingPost(null)}
+        title="Delete Broadcast"
+      >
+        <div className="space-y-4 py-2 text-white">
+          <p className="text-xs text-zinc-300 leading-relaxed">
+            Are you sure you want to delete this broadcast? This action will permanently remove the post from the Solvexa mesh.
+          </p>
+
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+            <button
+              type="button"
+              onClick={() => setDeletingPost(null)}
+              className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmDeletePost}
+              disabled={isDeletingPost}
+              className="px-5 py-2 rounded-xl text-xs font-bold bg-error text-white hover:bg-error/90 disabled:opacity-40 transition-all"
+            >
+              {isDeletingPost ? 'Deleting...' : 'Delete Broadcast'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Signal Modal */}
+      <Modal
+        isOpen={!!editingSignal}
+        onClose={() => setEditingSignal(null)}
+        title="Edit Signal"
+      >
+        <form onSubmit={handleSaveSignalEdit} className="space-y-4 py-2">
+          {editSignalError && (
+            <div className="p-3 rounded-xl bg-error/10 border border-error/20 text-error text-xs">
+              {editSignalError}
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+              Signal Caption
+            </label>
+            <textarea
+              rows={3}
+              value={editSignalCaption}
+              onChange={(e) => setEditSignalCaption(e.target.value)}
+              placeholder="Update signal caption..."
+              className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl p-3 text-xs text-white placeholder:text-zinc-600 focus:outline-none resize-none"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+              Topic Tags (comma-separated)
+            </label>
+            <input
+              type="text"
+              value={editSignalTopics}
+              onChange={(e) => setEditSignalTopics(e.target.value)}
+              placeholder="e.g. WebGPU, NeuralMesh"
+              className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+            <button
+              type="button"
+              onClick={() => setEditingSignal(null)}
+              className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSavingSignalEdit || !editSignalCaption.trim()}
+              className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#7a00ff] to-[#0066ff] hover:opacity-90 disabled:opacity-40 transition-all"
+            >
+              {isSavingSignalEdit ? 'Saving...' : 'Save Signal'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Delete Signal Modal */}
+      <Modal
+        isOpen={!!deletingSignal}
+        onClose={() => setDeletingSignal(null)}
+        title="Delete Signal"
+      >
+        <div className="space-y-4 py-2 text-white">
+          <p className="text-xs text-zinc-300 leading-relaxed">
+            Are you sure you want to delete this signal video? This action will permanently remove the signal from your orbit and the mesh feed.
+          </p>
+
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+            <button
+              type="button"
+              onClick={() => setDeletingSignal(null)}
+              className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmDeleteSignal}
+              disabled={isDeletingSignal}
+              className="px-5 py-2 rounded-xl text-xs font-bold bg-error text-white hover:bg-error/90 disabled:opacity-40 transition-all"
+            >
+              {isDeletingSignal ? 'Deleting...' : 'Delete Signal'}
+            </button>
           </div>
         </div>
       </Modal>

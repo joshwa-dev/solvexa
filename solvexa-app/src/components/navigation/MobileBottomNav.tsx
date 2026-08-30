@@ -1,12 +1,24 @@
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
+import { dataStore } from '../../services/store/dataStore';
 
 export function MobileBottomNav() {
+  const [unreadMessages, setUnreadMessages] = useState(0);
+
+  useEffect(() => {
+    const update = () => {
+      setUnreadMessages(dataStore.getUnreadMessageCount());
+    };
+    update();
+    return dataStore.subscribe(update);
+  }, []);
+
   const navItems = [
     { path: '/pulse', label: 'Pulse', icon: 'sensors' },
     { path: '/explore', label: 'Explore', icon: 'explore' },
     { path: '/create', label: 'Broadcast', icon: 'add_circle', isAction: true },
     { path: '/signals', label: 'Signals', icon: 'play_circle' },
-    { path: '/messages', label: 'Nexus', icon: 'forum' },
+    { path: '/messages', label: 'Nexus', icon: 'forum', badge: unreadMessages > 0 ? unreadMessages : null },
     { path: '/orbit', label: 'Orbit', icon: 'person' },
   ];
 
@@ -43,20 +55,27 @@ export function MobileBottomNav() {
             key={item.path}
             to={item.path}
             className={({ isActive }) =>
-              `flex flex-col items-center justify-center p-1 rounded-lg transition-colors ${
+              `flex flex-col items-center justify-center p-1 rounded-lg transition-colors relative ${
                 isActive ? 'text-primary' : 'text-zinc-400 hover:text-white'
               }`
             }
           >
             {({ isActive }) => (
               <>
-                <span
-                  className={`material-symbols-outlined text-[22px] ${
-                    isActive ? 'icon-filled text-primary' : ''
-                  }`}
-                >
-                  {item.icon}
-                </span>
+                <div className="relative">
+                  <span
+                    className={`material-symbols-outlined text-[22px] ${
+                      isActive ? 'icon-filled text-primary' : ''
+                    }`}
+                  >
+                    {item.icon}
+                  </span>
+                  {item.badge && (
+                    <span className="absolute -top-1 -right-2 px-1.5 py-0.2 text-[9px] font-bold rounded-full bg-secondary text-black leading-tight shadow-md">
+                      {item.badge}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px] font-medium tracking-tight mt-0.5">
                   {item.label}
                 </span>

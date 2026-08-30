@@ -5,6 +5,8 @@ import type { Post, SignalType } from '../../types/post.types';
 import { Avatar } from '../../components/common/Avatar';
 import { SignalChip } from '../../components/common/SignalChip';
 import { MediaViewer, type MediaViewerItem } from '../../components/common/MediaViewer';
+import { formatRelativeTime } from '../../lib/firestoreUtils';
+
 
 export default function PostDetailPage() {
   const { postId } = useParams<{ postId: string }>();
@@ -22,14 +24,28 @@ export default function PostDetailPage() {
   if (!post) {
     return (
       <div className="min-h-screen bg-[#0A0A0B] flex items-center justify-center p-6 text-white text-center">
-        <div>
-          <p className="text-zinc-400 mb-4">Signal not found or has expired.</p>
-          <button
-            onClick={() => navigate('/pulse')}
-            className="px-4 py-2 rounded-xl text-xs font-bold bg-primary text-white"
-          >
-            Back to Pulse
-          </button>
+        <div className="max-w-md p-8 rounded-3xl bg-[#141416]/90 border border-white/10 space-y-4 shadow-2xl">
+          <div className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mx-auto text-zinc-400">
+            <span className="material-symbols-outlined text-2xl">sensors_off</span>
+          </div>
+          <h2 className="text-lg font-bold text-white">This post is no longer available.</h2>
+          <p className="text-xs text-zinc-400">
+            The broadcast may have been deleted by the author or is no longer accessible.
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => navigate('/pulse')}
+              className="px-5 py-2.5 rounded-xl text-xs font-bold bg-primary text-white hover:opacity-90 transition-all shadow-lg"
+            >
+              Explore Pulse Feed
+            </button>
+            <button
+              onClick={() => navigate('/saved')}
+              className="px-4 py-2.5 rounded-xl text-xs font-bold bg-white/5 hover:bg-white/10 text-zinc-300 border border-white/10 transition-all"
+            >
+              Saved Vault
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -59,14 +75,15 @@ export default function PostDetailPage() {
       <div className="p-6 sm:p-8 rounded-3xl bg-[#141416]/95 border border-white/10 space-y-6 shadow-2xl backdrop-blur-xl">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link to={`/profile/${post.authorUsername}`}>
+            <Link to={`/profile/${post.authorId || post.authorUsername}`}>
               <Avatar src={post.authorAvatar} name={post.authorName} size="md" hasStory />
             </Link>
             <div>
               <div className="text-base font-bold text-white">{post.authorName}</div>
-              <div className="text-xs text-zinc-500">@{post.authorUsername}</div>
+              <div className="text-xs text-zinc-500">@{post.authorUsername} • {formatRelativeTime(post.createdAt)}</div>
             </div>
           </div>
+
           {post.spaceName && (
             <span className="px-3 py-1 rounded-xl text-xs font-semibold bg-primary/10 text-primary border border-primary/20">
               {post.spaceName}

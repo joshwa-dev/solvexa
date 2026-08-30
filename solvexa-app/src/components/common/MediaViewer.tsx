@@ -10,7 +10,7 @@ export interface MediaViewerItem {
   type?: 'image' | 'video';
   authorName?: string;
   authorUsername?: string;
-  authorAvatar?: string;
+  authorAvatar?: string | null;
   caption?: string;
   createdAt?: string;
   postId?: string;

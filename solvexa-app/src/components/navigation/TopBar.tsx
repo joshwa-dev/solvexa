@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../features/auth/AuthContext';
 import { signOutUser } from '../../services/auth/authService';
 import { dataStore } from '../../services/store/dataStore';
-import { Avatar } from '../common/Avatar';
+import { Avatar, resolveAvatarSrc } from '../common/Avatar';
 
 export function TopBar() {
   const { solvexaUser, firebaseUser, isGuest, dataMode, signOut, exitDemoMode } = useAuth();
@@ -13,7 +13,7 @@ export function TopBar() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  const avatarUrl = solvexaUser?.photoURL || firebaseUser?.photoURL || null;
+  const avatarUrl = resolveAvatarSrc(solvexaUser, firebaseUser);
   const displayName = solvexaUser?.displayName || firebaseUser?.displayName || 'Solvexa User';
   const username = solvexaUser?.username || 'user';
 

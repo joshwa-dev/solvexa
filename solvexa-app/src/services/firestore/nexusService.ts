@@ -15,6 +15,7 @@ import {
 import { db, auth } from '../firebase/config';
 import type { Conversation, Message } from '../../types/message.types';
 import { mapFirestoreError } from '../../lib/errors';
+import { sanitizeForFirestore } from '../../lib/firestoreUtils';
 
 const CONVERSATIONS_COLLECTION = 'conversations';
 
@@ -152,7 +153,7 @@ export async function getOrCreateFirestoreConversation(
     };
 
     const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
-    await setDoc(convRef, newConv);
+    await setDoc(convRef, sanitizeForFirestore(newConv));
 
     return newConv;
   } catch (error: unknown) {
@@ -195,17 +196,20 @@ export async function sendMessageInFirestore(
     const msgRef = doc(db, CONVERSATIONS_COLLECTION, conversationId, 'messages', messageId);
     const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
 
+    const sanitizedMsg = sanitizeForFirestore(newMsg);
+    const sanitizedConvUpdate = sanitizeForFirestore({
+      lastMessage: {
+        content: content || 'Shared an item',
+        senderId: currentUser.uid,
+        sentAt: now,
+        type: newMsg.type,
+      },
+      updatedAt: now,
+    });
+
     await Promise.all([
-      setDoc(msgRef, newMsg),
-      updateDoc(convRef, {
-        lastMessage: {
-          content: content || 'Shared an item',
-          senderId: currentUser.uid,
-          sentAt: now,
-          type: newMsg.type,
-        },
-        updatedAt: now,
-      }),
+      setDoc(msgRef, sanitizedMsg),
+      updateDoc(convRef, sanitizedConvUpdate),
     ]);
 
     return newMsg;
@@ -264,5 +268,26 @@ export async function deleteMessageForEveryoneInFirestore(
     console.error('[nexusService] deleteMessageForEveryone error:', error);
     const firestoreError = error as { code?: string; message?: string };
     throw new Error(mapFirestoreError(firestoreError));
+  }
+}
+
+/**
+ * Marks conversation unread count as 0 for the specified user in Firestore
+ */
+export async function markConversationReadInFirestore(
+  conversationId: string,
+  uid: string
+): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.uid !== uid) return;
+
+  try {
+    const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
+    await updateDoc(convRef, {
+      [`unreadCounts.${uid}`]: 0,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error: unknown) {
+    console.warn('[nexusService] markConversationReadInFirestore warning:', error);
   }
 }

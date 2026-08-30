@@ -36,6 +36,7 @@ import {
   sendMessageInFirestore,
   deleteMessageForMeInFirestore,
   deleteMessageForEveryoneInFirestore,
+  markConversationReadInFirestore,
 } from '../firestore/nexusService';
 import { logActivityEvent } from '../firestore/activityService';
 
@@ -284,15 +285,118 @@ class DataStore {
   }
 
   public getUsers(): SolvexaUser[] {
-    return [...this.users];
+    if (this.dataMode === 'DEMO') {
+      return [...this.users];
+    }
+
+    const userMap = new Map<string, SolvexaUser>();
+
+    // 1. Explicitly cached users
+    this.users.forEach((u) => {
+      if (u.uid && !u.uid.startsWith('guest_')) userMap.set(u.uid, u);
+    });
+
+    // 2. Currently authenticated user
+    if (this.currentUser?.uid && !this.currentUser.uid.startsWith('guest_') && !this.currentUser.uid.startsWith('user_anonymous')) {
+      userMap.set(this.currentUser.uid, this.currentUser);
+    }
+
+    // 3. Authors from real signals
+    this.signals.forEach((s) => {
+      if (s.authorId && !userMap.has(s.authorId) && !s.authorId.startsWith('guest_')) {
+        userMap.set(s.authorId, {
+          uid: s.authorId,
+          displayName: s.authorName || 'Solvexa Pioneer',
+          username: s.authorUsername || 'pioneer',
+          email: '',
+          photoURL: s.authorAvatar || null,
+          coverPhotoURL: null,
+          bio: 'Network researcher & signal pioneer.',
+          location: 'Mesh Network',
+          website: '',
+          createdAt: s.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          followerCount: s.resonanceCount || 1,
+          followingCount: 0,
+          signalCount: 1,
+          spaceCount: 0,
+          resonanceScore: s.resonanceCount || 1,
+          isPrivate: false,
+          onboardingComplete: true,
+          privacySettings: {
+            whoCanMessage: 'everyone',
+            whoCanMention: 'everyone',
+            whoCanComment: 'everyone',
+            activityVisible: true,
+          },
+          notificationPrefs: {
+            signals: true,
+            comments: true,
+            follows: true,
+            mentions: true,
+            messages: true,
+            spaceActivity: true,
+            momentReplies: true,
+          },
+          identityCards: [{ id: '1', label: 'Signal Pioneer', icon: 'sensors', order: 1, category: 'role' }],
+        });
+      }
+    });
+
+    // 4. Authors from real posts
+    this.posts.forEach((p) => {
+      if (p.authorId && !userMap.has(p.authorId) && !p.authorId.startsWith('guest_')) {
+        userMap.set(p.authorId, {
+          uid: p.authorId,
+          displayName: p.authorName || 'Solvexa Pioneer',
+          username: p.authorUsername || 'pioneer',
+          email: '',
+          photoURL: p.authorAvatar || null,
+          coverPhotoURL: null,
+          bio: 'Network researcher & broadcast pioneer.',
+          location: 'Mesh Network',
+          website: '',
+          createdAt: p.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          followerCount: p.signalCount || 1,
+          followingCount: 0,
+          signalCount: 1,
+          spaceCount: 0,
+          resonanceScore: p.signalCount || 1,
+          isPrivate: false,
+          onboardingComplete: true,
+          privacySettings: {
+            whoCanMessage: 'everyone',
+            whoCanMention: 'everyone',
+            whoCanComment: 'everyone',
+            activityVisible: true,
+          },
+          notificationPrefs: {
+            signals: true,
+            comments: true,
+            follows: true,
+            mentions: true,
+            messages: true,
+            spaceActivity: true,
+            momentReplies: true,
+          },
+          identityCards: [{ id: '1', label: 'Signal Pioneer', icon: 'sensors', order: 1, category: 'role' }],
+        });
+      }
+    });
+
+    return Array.from(userMap.values());
   }
 
   public getUser(uid: string): SolvexaUser | undefined {
-    if (this.currentUser && (this.currentUser.uid === uid || this.currentUser.username === uid)) {
+    if (!uid) return undefined;
+    if (this.currentUser && (this.currentUser.uid === uid || this.currentUser.username?.toLowerCase() === uid.toLowerCase())) {
       return this.currentUser;
     }
-    return this.users.find((u) => u.uid === uid || u.username === uid);
+    const all = this.getUsers();
+    return all.find((u) => u.uid === uid || u.username?.toLowerCase() === uid.toLowerCase());
   }
+
 
   public toggleFollowUser(uid: string): boolean {
     const user = this.users.find((u) => u.uid === uid);
@@ -348,18 +452,19 @@ class DataStore {
     const newPost: Post = {
       postId: `post_${Date.now()}`,
       authorId: author.uid,
-      authorName: author.displayName,
-      authorUsername: author.username,
-      authorAvatar: author.photoURL || undefined,
+      authorName: author.displayName || 'Solvexa Pioneer',
+      authorUsername: author.username || 'pioneer',
+      authorAvatar: author.photoURL || null,
       content: data.content || '',
+
       media: data.media || [],
       mediaType: data.media && data.media.length > 0 ? (data.media.length > 1 ? 'multi' : 'image') : 'none',
       postType: data.postType || 'text',
       createdAt: new Date().toISOString(),
       visibility: data.visibility || 'public',
       spaceId: data.spaceId || null,
-      spaceName: data.spaceName,
-      topics: data.topics || [],
+      spaceName: data.spaceName || null,
+      topics: data.topics || ['SignalFlow'],
       commentCount: 0,
       signalCount: 1,
       shareCount: 0,
@@ -508,9 +613,9 @@ class DataStore {
       commentId: `com_${Date.now()}`,
       postId,
       authorId: author.uid,
-      authorName: author.displayName,
-      authorUsername: author.username,
-      authorAvatar: author.photoURL || undefined,
+      authorName: author.displayName || 'Solvexa Pioneer',
+      authorUsername: author.username || 'pioneer',
+      authorAvatar: author.photoURL || null,
       content,
       createdAt: new Date().toISOString(),
       replyTo,
@@ -893,6 +998,80 @@ class DataStore {
       if (this.dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous') && !currentUid.startsWith('guest_')) {
         deleteMessageForEveryoneInFirestore(conversationId, messageId).catch((err) => {
           console.error('[dataStore] Failed to delete message for everyone in Firestore:', err);
+        });
+      }
+    }
+  }
+
+  /**
+   * Computes the real count of unread incoming messages across all active conversations
+   */
+  public getUnreadMessageCount(): number {
+    const currentUid = this.currentUser?.uid;
+    if (!currentUid || currentUid === 'user_anonymous' || currentUid.startsWith('guest_')) {
+      return 0;
+    }
+
+    let count = 0;
+    const userConvs = this.conversations.filter((c) => c.participants.includes(currentUid));
+
+    for (const conv of userConvs) {
+      if (conv.unreadCounts && typeof conv.unreadCounts[currentUid] === 'number') {
+        count += conv.unreadCounts[currentUid];
+      } else {
+        const msgs = this.messages[conv.conversationId] || [];
+        for (const m of msgs) {
+          if (
+            m.senderId !== currentUid &&
+            !m.read &&
+            !m.readAt &&
+            (!m.deletedFor || !m.deletedFor.includes(currentUid))
+          ) {
+            count += 1;
+          }
+        }
+      }
+    }
+
+    return count;
+  }
+
+  /**
+   * Marks all messages in a conversation as read by the current user
+   */
+  public markConversationAsRead(conversationId: string): void {
+    const currentUid = this.currentUser?.uid;
+    if (!currentUid || currentUid === 'user_anonymous') return;
+
+    let changed = false;
+    const conv = this.conversations.find((c) => c.conversationId === conversationId);
+    if (conv && conv.unreadCounts && conv.unreadCounts[currentUid] > 0) {
+      conv.unreadCounts[currentUid] = 0;
+      changed = true;
+    }
+
+    const msgs = this.messages[conversationId] || [];
+    for (const m of msgs) {
+      if (m.senderId !== currentUid && (!m.read || !m.readAt)) {
+        m.read = true;
+        m.readAt = new Date().toISOString();
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      setStored(STORAGE_KEYS.CONVERSATIONS, this.conversations);
+      setStored(STORAGE_KEYS.MESSAGES, this.messages);
+      this.notify();
+
+      if (
+        this.dataMode === 'REAL' &&
+        currentUid &&
+        !currentUid.startsWith('user_anonymous') &&
+        !currentUid.startsWith('guest_')
+      ) {
+        markConversationReadInFirestore(conversationId, currentUid).catch((err) => {
+          console.warn('[dataStore] markConversationReadInFirestore warning:', err);
         });
       }
     }

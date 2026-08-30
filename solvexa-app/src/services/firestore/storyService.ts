@@ -13,6 +13,8 @@ import { db, auth } from '../firebase/config';
 import type { MomentWithAuthor } from '../../types/moment.types';
 import { mapFirestoreError } from '../../lib/errors';
 
+import { sanitizeForFirestore } from '../../lib/firestoreUtils';
+
 const STORIES_COLLECTION = 'stories';
 
 /**
@@ -37,9 +39,9 @@ export async function createStoryInFirestore(storyData: {
     const storyDoc = {
       momentId: storyId,
       authorId: currentUser.uid,
-      media: storyData.mediaUrl,
+      media: storyData.mediaUrl || null,
       mediaType: storyData.mediaType,
-      text: storyData.text,
+      text: storyData.text || null,
       backgroundColor: storyData.backgroundColor || '#141416',
       visibility: 'public',
       createdAt: now.toISOString(),
@@ -59,7 +61,7 @@ export async function createStoryInFirestore(storyData: {
     };
 
     const storyRef = doc(db, STORIES_COLLECTION, storyId);
-    await setDoc(storyRef, storyDoc);
+    await setDoc(storyRef, sanitizeForFirestore(storyDoc));
 
     return storyDoc as MomentWithAuthor;
   } catch (error: unknown) {

@@ -15,11 +15,13 @@ import { db, auth } from '../firebase/config';
 import type { Post } from '../../types/post.types';
 import { mapFirestoreError } from '../../lib/errors';
 
+import { sanitizeForFirestore } from '../../lib/firestoreUtils';
+
 const POSTS_COLLECTION = 'posts';
 
 /**
  * Creates a new post in Firestore under posts/{postId}
- * Enforces authorId === auth.currentUser.uid
+ * Enforces authorId === auth.currentUser.uid and sanitizes against undefined fields
  */
 export async function createPostInFirestore(post: Post): Promise<void> {
   const currentUser = auth.currentUser;
@@ -29,14 +31,18 @@ export async function createPostInFirestore(post: Post): Promise<void> {
 
   try {
     const postRef = doc(db, POSTS_COLLECTION, post.postId);
-    const postData = {
+    const rawData = {
       ...post,
       authorId: currentUser.uid,
-      createdAt: new Date().toISOString(),
+      authorName: post.authorName || currentUser.displayName || 'Solvexa Pioneer',
+      authorUsername: post.authorUsername || currentUser.displayName?.toLowerCase().replace(/\s+/g, '_') || 'pioneer',
+      authorAvatar: post.authorAvatar || currentUser.photoURL || null,
+      createdAt: post.createdAt || new Date().toISOString(),
       updatedAt: serverTimestamp(),
     };
 
-    await setDoc(postRef, postData);
+    const sanitizedData = sanitizeForFirestore(rawData);
+    await setDoc(postRef, sanitizedData);
   } catch (error: unknown) {
     console.error('[postService] createPost error:', error);
     const firestoreError = error as { code?: string; message?: string };
@@ -100,10 +106,12 @@ export async function updatePostInFirestore(
       throw new Error('You do not have permission to edit this post.');
     }
 
-    await updateDoc(postRef, {
+    const sanitizedUpdates = sanitizeForFirestore({
       ...updates,
       updatedAt: serverTimestamp(),
     });
+
+    await updateDoc(postRef, sanitizedUpdates);
   } catch (error: unknown) {
     console.error('[postService] updatePost error:', error);
     const firestoreError = error as { code?: string; message?: string };

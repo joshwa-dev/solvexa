@@ -21,7 +21,7 @@ export interface Post {
   authorId: string;
   authorName?: string;
   authorUsername?: string;
-  authorAvatar?: string;
+  authorAvatar?: string | null;
   content: string;
   media: MediaItem[];
   mediaType: 'none' | 'image' | 'video' | 'multi';
@@ -30,7 +30,7 @@ export interface Post {
   updatedAt?: any;
   visibility: PostVisibility;
   spaceId: string | null;
-  spaceName?: string;
+  spaceName?: string | null;
   topics: string[];
   commentCount: number;
   signalCount: number;
@@ -58,8 +58,9 @@ export interface Comment {
   authorId: string;
   authorName?: string;
   authorUsername?: string;
-  authorAvatar?: string;
+  authorAvatar?: string | null;
   content: string;
+
   createdAt: any;
   updatedAt?: any;
   replyTo: string | null;

@@ -6,7 +6,7 @@ import type { Signal } from '../../types/signal.types';
 import { Avatar } from '../../components/common/Avatar';
 import { Modal } from '../../components/common/Modal';
 import { EmptyState } from '../../components/common/EmptyState';
-import { uploadMediaFile } from '../../services/storage/mediaUpload';
+import { uploadMediaFile, getSignalThumbnail, getCloudinaryVideoThumbnail } from '../../services/storage/mediaUpload';
 
 export default function SignalsPage() {
   const { solvexaUser, dataMode } = useAuth();
@@ -205,13 +205,13 @@ export default function SignalsPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith('video/')) {
-      setUploadError('Please select a valid video file (MP4, WebM, QuickTime).');
+    if (!file.type.startsWith('video/') && !file.type.startsWith('image/')) {
+      setUploadError('Please select a valid media file (MP4, WebM, PNG, JPEG, WebP).');
       return;
     }
 
     if (file.size > 100 * 1024 * 1024) {
-      setUploadError('Video file size exceeds the 100MB limit.');
+      setUploadError('Media file size exceeds the 100MB limit.');
       return;
     }
 
@@ -226,12 +226,13 @@ export default function SignalsPage() {
     setSelectedFile(null);
     setPreviewUrl(null);
     setUploadError(null);
+    if (videoInputRef.current) videoInputRef.current.value = '';
   };
 
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFile) {
-      setUploadError('Please select a video file.');
+      setUploadError('Please select a media file.');
       return;
     }
 
@@ -244,6 +245,30 @@ export default function SignalsPage() {
         setUploadProgress(progress);
       });
 
+      // ── Validate the uploaded URL is a real https:// URL ──────────────────
+      // The upload may return a blob: or data: URL in dev (Cloudinary not configured).
+      // We allow data: URLs in dev but never undefined/empty.
+      if (!uploaded.url || typeof uploaded.url !== 'string' || uploaded.url.trim() === '') {
+        throw new Error('Upload did not return a valid media URL. Please try again.');
+      }
+
+      const mediaType = uploaded.type; // 'image' | 'video'
+
+      // ── Derive a proper static thumbnail URL ──────────────────────────────
+      // For VIDEO uploads: thumbnailUrl should be a JPEG poster, NOT the .mp4 URL.
+      //   Cloudinary's transformation converts /video/upload/ → /image/upload/ + .jpg
+      //   This avoids browser broken-image when thumbnailUrl is used in <img src>.
+      // For IMAGE uploads: thumbnailUrl === uploaded.url (the image itself).
+      let thumbnailUrl: string;
+      if (mediaType === 'video') {
+        const derived = getCloudinaryVideoThumbnail(uploaded.url);
+        // Fall back to the video URL itself only if we can't derive a poster
+        // (e.g. dev mode data: URL). In that case ProfilePage's onError handles it.
+        thumbnailUrl = derived || uploaded.url;
+      } else {
+        thumbnailUrl = uploaded.url;
+      }
+
       const parsedTopics = videoTopics
         .split(',')
         .map((t) => t.trim().replace(/^#/, ''))
@@ -251,13 +276,14 @@ export default function SignalsPage() {
 
       const newSignal: Signal = {
         id: `sig_${Date.now()}`,
-        authorId: solvexaUser?.uid || '',
+        authorId: solvexaUser?.uid || 'user_anonymous',
         authorName: solvexaUser?.displayName || 'Solvexa Pioneer',
         authorUsername: solvexaUser?.username || 'pioneer',
         authorAvatar: solvexaUser?.photoURL || null,
-        videoUrl: uploaded.url,
-        thumbnailUrl: uploaded.url,
-        caption: videoCaption.trim(),
+        videoUrl: uploaded.url,       // The actual Cloudinary media URL (mp4 / jpg)
+        thumbnailUrl,                 // Always a static image URL for <img src> use
+        mediaType,                    // 'image' | 'video' — self-describing signal type
+        caption: videoCaption.trim() || 'New mesh signal broadcast.',
         topics: parsedTopics.length > 0 ? parsedTopics : ['SignalFlow'],
         soundTitle: 'Original Audio',
         soundAuthor: solvexaUser?.displayName || 'Solvexa Pioneer',
@@ -274,10 +300,11 @@ export default function SignalsPage() {
       setIsUploadOpen(false);
       handleRemoveMedia();
       setVideoCaption('');
+      setVideoTopics('');
       setIsUploading(false);
       setUploadProgress(0);
       setCurrentIndex(0);
-      showToast('Signal video broadcasted to the mesh.');
+      showToast('Signal broadcasted to the mesh.');
     } catch (err: unknown) {
       const e = err as Error;
       setUploadError(e.message || 'Upload failed. Please check your connection.');
@@ -285,14 +312,158 @@ export default function SignalsPage() {
     }
   };
 
+  // ─── UPLOAD SIGNAL MODAL ───────────────────────────────────────────────────
+  // Rendered here (outside both returns) so it is always mounted regardless of
+  // whether the feed is empty or has signals. Previously it only appeared inside
+  // the main return (with signals), so clicking "Upload Signal" in the empty
+  // state set isUploadOpen=true but the modal was never in the DOM.
+  const uploadModal = (
+    <Modal isOpen={isUploadOpen} onClose={() => { setIsUploadOpen(false); handleRemoveMedia(); }} title="Upload Signal (Short Video)" maxWidth="xl">
+      <form onSubmit={handleUploadSubmit} className="space-y-6 py-2 text-white min-w-0">
+        {uploadError && (
+          <div className="p-3.5 rounded-xl bg-error/15 border border-error/30 text-error text-xs flex items-center gap-2">
+            <span className="material-symbols-outlined text-base flex-shrink-0">error</span>
+            <span>{uploadError}</span>
+          </div>
+        )}
+
+        <input
+          type="file"
+          ref={videoInputRef}
+          onChange={handleFileChange}
+          accept="video/mp4,video/webm,video/quicktime,video/*,image/png,image/jpeg,image/webp,image/*"
+          className="hidden"
+        />
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-w-0">
+          {/* Left Col: Upload Area */}
+          <div className="space-y-2 min-w-0">
+            <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block">
+              Signal Media Asset (MP4 / WebM / Image ≤ 100MB)
+            </label>
+
+            {previewUrl ? (
+              <div className="relative rounded-2xl overflow-hidden border border-white/20 bg-black/90 aspect-[9/14] max-h-[380px] flex items-center justify-center p-2 group shadow-2xl mx-auto">
+                {selectedFile?.type.startsWith('video/') ? (
+                  <video src={previewUrl} controls className="w-full h-full rounded-xl object-contain" />
+                ) : (
+                  <img src={previewUrl} alt="Preview" className="w-full h-full rounded-xl object-contain" />
+                )}
+                <button
+                  type="button"
+                  onClick={handleRemoveMedia}
+                  className="absolute top-3 right-3 p-1.5 rounded-full bg-black/80 hover:bg-black text-white backdrop-blur-md border border-white/20 transition-transform group-hover:scale-105"
+                >
+                  <span className="material-symbols-outlined text-sm">close</span>
+                </button>
+              </div>
+            ) : (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => videoInputRef.current?.click()}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') videoInputRef.current?.click(); }}
+                className="rounded-2xl border-2 border-dashed border-white/20 hover:border-primary/60 bg-white/5 aspect-[9/14] max-h-[380px] flex flex-col items-center justify-center gap-3 p-6 text-center cursor-pointer transition-all hover:bg-white/[0.08] group mx-auto"
+              >
+                <div className="w-14 h-14 rounded-full bg-primary/20 flex items-center justify-center text-primary group-hover:scale-110 transition-transform signal-glow">
+                  <span className="material-symbols-outlined text-3xl">upload_file</span>
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-white">Select Signal Media</div>
+                  <div className="text-[10px] text-zinc-400 mt-0.5">Vertical format (9:16) recommended</div>
+                </div>
+              </div>
+            )}
+
+            {/* Progress Bar */}
+            {isUploading && (
+              <div className="space-y-1.5 pt-2 animate-in fade-in">
+                <div className="flex justify-between text-[11px] font-bold text-zinc-300">
+                  <span>Encoding & Uploading to Cloudinary...</span>
+                  <span>{uploadProgress}%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 signal-glow"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right Col: Metadata */}
+          <div className="space-y-4 min-w-0">
+            <div>
+              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+                Caption / Thesis
+              </label>
+              <textarea
+                rows={4}
+                value={videoCaption}
+                onChange={(e) => setVideoCaption(e.target.value)}
+                placeholder="Explain the neural pattern, pipeline, or spatial demo..."
+                className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl p-3 text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
+                Topic Tags (comma-separated)
+              </label>
+              <input
+                type="text"
+                value={videoTopics}
+                onChange={(e) => setVideoTopics(e.target.value)}
+                placeholder="e.g. QuantumFlow, SpatialUI, WebGPU"
+                className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
+          <button
+            type="button"
+            onClick={() => { setIsUploadOpen(false); handleRemoveMedia(); }}
+            className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={isUploading || !selectedFile}
+            className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#7a00ff] to-[#0066ff] hover:opacity-90 shadow-lg shadow-purple-900/40 disabled:opacity-40 transition-all flex items-center gap-2"
+          >
+            {isUploading ? (
+              <>
+                <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
+                <span>Broadcasting ({uploadProgress}%)...</span>
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-sm">send</span>
+                <span>Broadcast Signal</span>
+              </>
+            )}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+
   if (!currentSignal) {
     return (
-      <div className="w-full min-h-[calc(100vh-4rem)] md:min-h-screen bg-[#070709] flex items-center justify-center p-6 text-white">
-        <EmptyState
-          variant="signals"
-          onAction={() => setIsUploadOpen(true)}
-        />
-      </div>
+      <>
+        <div className="w-full min-h-[calc(100vh-4rem)] md:min-h-screen bg-[#070709] flex items-center justify-center p-6 text-white">
+          <EmptyState
+            variant="signals"
+            onAction={() => setIsUploadOpen(true)}
+          />
+        </div>
+        {/* Modal must render here too — otherwise isUploadOpen=true has no effect in empty state */}
+        {uploadModal}
+      </>
     );
   }
 
@@ -351,21 +522,29 @@ export default function SignalsPage() {
         className="relative w-full max-w-[430px] h-[calc(100dvh-5.5rem)] md:h-[820px] max-h-[88vh] rounded-3xl overflow-hidden bg-zinc-950 border border-white/15 shadow-2xl flex flex-col justify-between"
         style={{ aspectRatio: '9 / 16' }}
       >
-        {/* 1. Video Layer */}
+        {/* 1. Video / Media Layer */}
         <div
           onClick={handleTogglePlay}
           className="absolute inset-0 w-full h-full cursor-pointer z-0"
         >
-          <video
-            ref={videoPlayerRef}
-            src={currentSignal.videoUrl}
-            poster={currentSignal.thumbnailUrl}
-            autoPlay
-            loop
-            muted={isMuted}
-            playsInline
-            className="w-full h-full object-cover pointer-events-none"
-          />
+          {currentSignal.mediaType === 'image' || /\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i.test(currentSignal.videoUrl) ? (
+            <img
+              src={currentSignal.videoUrl}
+              alt={currentSignal.caption}
+              className="w-full h-full object-cover pointer-events-none"
+            />
+          ) : (
+            <video
+              ref={videoPlayerRef}
+              src={currentSignal.videoUrl}
+              poster={getSignalThumbnail(currentSignal.thumbnailUrl, currentSignal.videoUrl) || undefined}
+              autoPlay
+              loop
+              muted={isMuted}
+              playsInline
+              className="w-full h-full object-cover pointer-events-none"
+            />
+          )}
 
           <div className="absolute inset-x-0 top-0 h-44 bg-gradient-to-b from-black/80 via-black/35 to-transparent pointer-events-none" />
           <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none" />
@@ -689,132 +868,8 @@ export default function SignalsPage() {
         </div>
       </Modal>
 
-      {/* Upload Signal Modal */}
-      <Modal isOpen={isUploadOpen} onClose={() => setIsUploadOpen(false)} title="Upload Signal (Short Video)" maxWidth="xl">
-        <form onSubmit={handleUploadSubmit} className="space-y-6 py-2 text-white min-w-0">
-          {uploadError && (
-            <div className="p-3.5 rounded-xl bg-error/15 border border-error/30 text-error text-xs flex items-center gap-2">
-              <span className="material-symbols-outlined text-base flex-shrink-0">error</span>
-              <span>{uploadError}</span>
-            </div>
-          )}
-
-          <input
-            type="file"
-            ref={videoInputRef}
-            onChange={handleFileChange}
-            accept="video/mp4,video/webm,video/quicktime"
-            className="hidden"
-          />
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-w-0">
-            {/* Left Col: Upload Video Area */}
-            <div className="space-y-2 min-w-0">
-              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block">
-                Video Asset (MP4 / WebM &le; 100MB)
-              </label>
-
-              {previewUrl ? (
-                <div className="relative rounded-2xl overflow-hidden border border-white/20 bg-black/90 aspect-[9/14] max-h-[380px] flex items-center justify-center p-2 group shadow-2xl mx-auto">
-                  <video src={previewUrl} controls className="w-full h-full rounded-xl object-contain" />
-                  <button
-                    type="button"
-                    onClick={handleRemoveMedia}
-                    className="absolute top-3 right-3 p-1.5 rounded-full bg-black/80 hover:bg-black text-white backdrop-blur-md border border-white/20 transition-transform group-hover:scale-105"
-                  >
-                    <span className="material-symbols-outlined text-sm">close</span>
-                  </button>
-                </div>
-              ) : (
-                <div
-                  onClick={() => videoInputRef.current?.click()}
-                  className="rounded-2xl border-2 border-dashed border-white/20 hover:border-primary/60 bg-white/5 aspect-[9/14] max-h-[380px] flex flex-col items-center justify-center gap-3 p-6 text-center cursor-pointer transition-all hover:bg-white/[0.08] group mx-auto"
-                >
-                  <div className="w-14 h-14 rounded-full bg-primary/20 flex items-center justify-center text-primary group-hover:scale-110 transition-transform signal-glow">
-                    <span className="material-symbols-outlined text-3xl">upload_file</span>
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-white">Select Signal Video</div>
-                    <div className="text-[10px] text-zinc-400 mt-0.5">Vertical format (9:16) recommended</div>
-                  </div>
-                </div>
-              )}
-
-              {/* Progress Bar */}
-              {isUploading && (
-                <div className="space-y-1.5 pt-2 animate-in fade-in">
-                  <div className="flex justify-between text-[11px] font-bold text-zinc-300">
-                    <span>Encoding & Uploading to Cloudinary...</span>
-                    <span>{uploadProgress}%</span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 signal-glow"
-                      style={{ width: `${uploadProgress}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Right Col: Metadata */}
-            <div className="space-y-4 min-w-0">
-              <div>
-                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
-                  Caption / Thesis
-                </label>
-                <textarea
-                  rows={4}
-                  value={videoCaption}
-                  onChange={(e) => setVideoCaption(e.target.value)}
-                  placeholder="Explain the neural pattern, pipeline, or spatial demo..."
-                  className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl p-3 text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5">
-                  Topic Tags (comma-separated)
-                </label>
-                <input
-                  type="text"
-                  value={videoTopics}
-                  onChange={(e) => setVideoTopics(e.target.value)}
-                  placeholder="e.g. QuantumFlow, SpatialUI, WebGPU"
-                  className="w-full bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
-            <button
-              type="button"
-              onClick={() => setIsUploadOpen(false)}
-              className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isUploading || !selectedFile}
-              className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#7a00ff] to-[#0066ff] hover:opacity-90 shadow-lg shadow-purple-900/40 disabled:opacity-40 transition-all flex items-center gap-2"
-            >
-              {isUploading ? (
-                <>
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                  <span>Broadcasting ({uploadProgress}%)...</span>
-                </>
-              ) : (
-                <>
-                  <span className="material-symbols-outlined text-sm">send</span>
-                  <span>Broadcast Signal</span>
-                </>
-              )}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      {/* Upload Signal Modal — shared variable, also rendered in the empty-state path above */}
+      {uploadModal}
     </div>
   );
 }

@@ -11,10 +11,13 @@ import { MediaViewer, type MediaViewerItem } from '../../components/common/Media
 import { uploadMediaFile } from '../../services/storage/mediaUpload';
 import { Modal } from '../../components/common/Modal';
 import { EmptyState } from '../../components/common/EmptyState';
+import { formatRelativeTime } from '../../lib/firestoreUtils';
+
 
 export default function PulsePage() {
-  const { solvexaUser, dataMode } = useAuth();
+  const { solvexaUser, dataMode, exitDemoMode } = useAuth();
   const navigate = useNavigate();
+  const [isSigningIn, setIsSigningIn] = useState(false);
 
   const [posts, setPosts] = useState<Post[]>([]);
   const [moments, setMoments] = useState<MomentWithAuthor[]>([]);
@@ -92,20 +95,65 @@ export default function PulsePage() {
     return () => document.removeEventListener('click', handleDocumentClick);
   }, []);
 
+  const [mediaUploadProgress, setMediaUploadProgress] = useState(0);
+  const [mediaUploadError, setMediaUploadError] = useState<string | null>(null);
+  const [mediaLocalPreviewUrl, setMediaLocalPreviewUrl] = useState<string | null>(null);
+  const [selectedFileForPost, setSelectedFileForPost] = useState<File | null>(null);
+
   const handleMediaSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setSelectedFileForPost(file);
+    const preview = URL.createObjectURL(file);
+    setMediaLocalPreviewUrl(preview);
+    setMediaUploadError(null);
+
     try {
       setIsUploadingMedia(true);
-      const uploaded = await uploadMediaFile(file, 'posts');
+      setMediaUploadProgress(10);
+      const uploaded = await uploadMediaFile(file, 'posts', (pct) => {
+        setMediaUploadProgress(pct);
+      });
       setSelectedMedia(uploaded);
       setIsUploadingMedia(false);
+      setMediaUploadProgress(100);
     } catch (err: unknown) {
       const e = err as Error;
+      setMediaUploadError(e.message || 'Media upload error. Please retry.');
       showToast(e.message || 'Media upload error');
       setIsUploadingMedia(false);
     }
+  };
+
+  const handleRetryMediaUpload = async () => {
+    if (!selectedFileForPost) return;
+    try {
+      setIsUploadingMedia(true);
+      setMediaUploadError(null);
+      setMediaUploadProgress(10);
+      const uploaded = await uploadMediaFile(selectedFileForPost, 'posts', (pct) => {
+        setMediaUploadProgress(pct);
+      });
+      setSelectedMedia(uploaded);
+      setIsUploadingMedia(false);
+      setMediaUploadProgress(100);
+    } catch (err: unknown) {
+      const e = err as Error;
+      setMediaUploadError(e.message || 'Media upload error. Please retry.');
+      showToast(e.message || 'Media upload error');
+      setIsUploadingMedia(false);
+    }
+  };
+
+  const handleClearPostMedia = () => {
+    if (mediaLocalPreviewUrl) URL.revokeObjectURL(mediaLocalPreviewUrl);
+    setMediaLocalPreviewUrl(null);
+    setSelectedMedia(null);
+    setSelectedFileForPost(null);
+    setMediaUploadError(null);
+    setMediaUploadProgress(0);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleCreatePost = (e: FormEvent) => {
@@ -126,23 +174,29 @@ export default function PulsePage() {
     const manualTags = customTags.split(',').map((t) => t.trim().replace(/^#/, '')).filter(Boolean);
     const combinedTopics = Array.from(new Set([...extractedTags, ...manualTags]));
 
-    dataStore.createPost({
-      content: newContent.trim(),
-      media: selectedMedia ? [{ url: selectedMedia.url, type: selectedMedia.type }] : [],
-      postType: formattedPoll ? 'poll' : selectedMedia ? selectedMedia.type : 'text',
-      spaceId: selectedSpaceId || null,
-      spaceName: space?.name,
-      topics: combinedTopics.length > 0 ? combinedTopics : ['SignalFlow'],
-      pollOptions: formattedPoll,
-    });
+    try {
+      dataStore.createPost({
+        content: newContent.trim(),
+        media: selectedMedia ? [{ url: selectedMedia.url, type: selectedMedia.type }] : [],
+        postType: formattedPoll ? 'poll' : selectedMedia ? selectedMedia.type : 'text',
+        spaceId: selectedSpaceId || null,
+        spaceName: space?.name,
+        topics: combinedTopics.length > 0 ? combinedTopics : ['SignalFlow'],
+        pollOptions: formattedPoll,
+      });
 
-    setNewContent('');
-    setSelectedMedia(null);
-    setShowPollBuilder(false);
-    setPollOptions(['', '']);
-    setCustomTags('');
-    setIsPublishing(false);
-    showToast('Broadcast published to the mesh.');
+      setNewContent('');
+      handleClearPostMedia();
+      setShowPollBuilder(false);
+      setPollOptions(['', '']);
+      setCustomTags('');
+      setIsPublishing(false);
+      showToast('Broadcast published to the mesh.');
+    } catch (err: unknown) {
+      const e = err as Error;
+      setIsPublishing(false);
+      showToast(e.message || 'Failed to create post. Please try again.');
+    }
   };
 
   // --- EDIT POST ---
@@ -271,10 +325,28 @@ export default function PulsePage() {
             </span>
           </div>
           <button
-            onClick={() => navigate('/login')}
-            className="px-3 py-1 rounded-xl bg-primary/20 hover:bg-primary/30 text-primary font-bold text-[11px] transition-all"
+            disabled={isSigningIn}
+            onClick={() => {
+              if (isSigningIn) return;
+              setIsSigningIn(true);
+              // Must exit Demo Mode (clears isGuest) BEFORE navigating to /login.
+              // Without this, PublicOnlyRoute sees isAuthenticated=true and redirects back.
+              exitDemoMode();
+              navigate('/login');
+            }}
+            className="px-3 py-1.5 rounded-xl bg-primary/20 hover:bg-primary/40 active:scale-95 text-primary font-bold text-[11px] transition-all disabled:opacity-50 disabled:cursor-wait flex items-center gap-1.5"
           >
-            Sign In with Real Account
+            {isSigningIn ? (
+              <>
+                <span className="material-symbols-outlined text-xs animate-spin">progress_activity</span>
+                <span>Opening...</span>
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-xs">login</span>
+                <span>Sign In with Real Account</span>
+              </>
+            )}
           </button>
         </div>
       )}
@@ -402,30 +474,68 @@ export default function PulsePage() {
           className="hidden"
         />
 
-        {/* Uploaded Media Preview */}
-        {selectedMedia && (
-          <div className="relative rounded-2xl overflow-hidden border border-white/15 bg-black/60 max-h-[380px] flex items-center justify-center p-2">
-            {selectedMedia.type === 'video' ? (
-              <video src={selectedMedia.url} controls className="max-h-[360px] w-auto h-auto rounded-xl object-contain" />
+        {/* Uploaded Media Preview & Upload Progress */}
+        {(mediaLocalPreviewUrl || selectedMedia) && (
+          <div className="relative rounded-2xl overflow-hidden border border-white/15 bg-black/60 max-h-[380px] flex flex-col items-center justify-center p-2">
+            {selectedFileForPost?.type.startsWith('video/') || selectedMedia?.type === 'video' ? (
+              <video src={mediaLocalPreviewUrl || selectedMedia?.url} controls className="max-h-[340px] w-auto h-auto rounded-xl object-contain" />
             ) : (
-              <img src={selectedMedia.url} alt="Upload preview" className="max-h-[360px] w-auto h-auto rounded-xl object-contain" />
+              <img src={mediaLocalPreviewUrl || selectedMedia?.url} alt="Upload preview" className="max-h-[340px] w-auto h-auto rounded-xl object-contain" />
             )}
-            <div className="absolute top-4 right-4 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="px-3 py-1 rounded-xl bg-black/80 hover:bg-black text-white text-xs font-bold backdrop-blur-md border border-white/20"
-              >
-                Replace
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedMedia(null)}
-                className="p-1.5 rounded-full bg-black/80 hover:bg-black text-white backdrop-blur-md border border-white/20"
-              >
-                <span className="material-symbols-outlined text-sm">close</span>
-              </button>
-            </div>
+
+            {/* Upload Progress Overlay */}
+            {isUploadingMedia && (
+              <div className="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center gap-3 p-4 z-20">
+                <div className="w-9 h-9 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                <div className="text-center space-y-1">
+                  <span className="text-xs font-bold text-white block">Transmitting Media to Cloudinary...</span>
+                  <span className="text-[11px] font-semibold text-primary">{mediaUploadProgress}%</span>
+                </div>
+                <div className="w-44 h-1.5 rounded-full bg-white/20 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-[#7a00ff] to-[#0066ff] transition-all duration-150"
+                    style={{ width: `${mediaUploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Upload Error Banner with Retry */}
+            {mediaUploadError && !isUploadingMedia && (
+              <div className="absolute inset-x-3 bottom-3 p-3 rounded-xl bg-red-950/90 border border-red-500/40 backdrop-blur-md flex items-center justify-between z-20">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-red-400 text-sm">error</span>
+                  <span className="text-xs text-red-200 font-medium">{mediaUploadError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRetryMediaUpload}
+                  className="px-3 py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-bold transition-all"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {!isUploadingMedia && (
+              <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-3 py-1 rounded-xl bg-black/80 hover:bg-black text-white text-xs font-bold backdrop-blur-md border border-white/20"
+                >
+                  Replace
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearPostMedia}
+                  className="p-1.5 rounded-full bg-black/80 hover:bg-black text-white backdrop-blur-md border border-white/20"
+                  title="Remove media"
+                >
+                  <span className="material-symbols-outlined text-sm">close</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -584,13 +694,13 @@ export default function PulsePage() {
                 {/* Post Header */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <Link to={`/profile/${post.authorUsername || 'user'}`}>
+                    <Link to={`/profile/${post.authorId || post.authorUsername || 'user'}`}>
                       <Avatar src={post.authorAvatar} name={post.authorName} size="md" hasStory />
                     </Link>
                     <div>
                       <div className="flex items-center gap-1.5">
                         <Link
-                          to={`/profile/${post.authorUsername || 'user'}`}
+                          to={`/profile/${post.authorId || post.authorUsername || 'user'}`}
                           className="text-sm font-bold text-white hover:text-primary transition-colors"
                         >
                           {post.authorName}
@@ -602,11 +712,12 @@ export default function PulsePage() {
                       <div className="text-xs text-zinc-500">
                         @{post.authorUsername} •{' '}
                         <span className="text-zinc-400">
-                          {new Date(post.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {formatRelativeTime(post.createdAt)}
                         </span>
                       </div>
                     </div>
                   </div>
+
 
                   {/* Right Header Actions: Space Badge + 3-Dot More Menu */}
                   <div className="flex items-center gap-2">

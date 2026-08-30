@@ -12,12 +12,13 @@ import {
   validateMediaFile,
   readFileAsDataURL,
   createLocalPreview,
+  getSignalThumbnail,
+  getCloudinaryVideoThumbnail,
   type CloudinaryUploadResult,
 } from '../media/cloudinaryService';
-import { isFirebaseConfigured } from '../firebase/config';
 
 export type { CloudinaryUploadResult };
-export { validateMediaFile, readFileAsDataURL, createLocalPreview };
+export { validateMediaFile, readFileAsDataURL, createLocalPreview, getSignalThumbnail, getCloudinaryVideoThumbnail };
 
 export interface UploadedMedia {
   url: string;
@@ -57,7 +58,7 @@ export async function uploadMediaFile(
   const cloudinaryConfigured = Boolean(cloudName && cloudName.length > 0);
 
   // --- Cloudinary Upload Path (production) ---
-  if (cloudinaryConfigured && isFirebaseConfigured) {
+  if (cloudinaryConfigured) {
     try {
       onProgress?.(5, 'uploading');
 

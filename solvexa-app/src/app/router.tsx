@@ -158,6 +158,14 @@ export function AppRouter() {
           }
         />
         <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <AuthenticatedLayout><ProfilePage /></AuthenticatedLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/profile/:username"
           element={
             <ProtectedRoute>

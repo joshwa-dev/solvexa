@@ -10,6 +10,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
+import { sanitizeForFirestore } from '../../lib/firestoreUtils';
 
 export type ActivityEventType =
   | 'login'
@@ -79,10 +80,10 @@ export async function logActivityEvent(
 
     // Persist to Firestore
     const actRef = doc(db, ACTIVITY_COLLECTION, eventId);
-    await setDoc(actRef, {
+    await setDoc(actRef, sanitizeForFirestore({
       ...event,
       createdAt: serverTimestamp(),
-    });
+    }));
   } catch {
     // Non-blocking telemetry
   }
