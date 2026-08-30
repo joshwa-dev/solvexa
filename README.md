@@ -4,6 +4,13 @@
 
 ---
 
+## 🌐 Live Demo
+
+🚀 **Live Website:** https://solvexa-9e0e5.web.app
+
+---
+
+
 ## ✨ Features
 
 - **Authentication**: Secure Firebase Authentication supporting Email/Password with real reauthentication password updates and Google Single Sign-On (SSO).
