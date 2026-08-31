@@ -33,6 +33,11 @@ export default function MessagesPage() {
 
   // WhatsApp-style message delete target
   const [selectedMessageForDelete, setSelectedMessageForDelete] = useState<Message | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Send lock to prevent duplicate messages
+  const isSendingRef = useRef(false);
+  const [isSending, setIsSending] = useState(false);
 
   // Attached media state
   const [attachedFile, setAttachedFile] = useState<{ url: string; type: 'image' | 'video'; name: string } | null>(null);
@@ -121,14 +126,25 @@ export default function MessagesPage() {
       !currentUid.startsWith('guest_')
     ) {
       unsubMessages = subscribeToConversationMessages(activeConversationId, (firestoreMsgs) => {
-        setMessages(firestoreMsgs);
+        // Filter out messages deleted for current viewer
+        const viewerFiltered = firestoreMsgs.filter(
+          (m) => !m.deletedFor || !m.deletedFor.includes(currentUid)
+        );
+        // Sort strictly chronologically by sentAt
+        const sorted = viewerFiltered.sort(
+          (a, b) => new Date(a.sentAt || 0).getTime() - new Date(b.sentAt || 0).getTime()
+        );
+        setMessages(sorted);
         setTimeout(() => {
           messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
         }, 50);
       });
     } else {
       const msgs = dataStore.getMessages(activeConversationId);
-      setMessages(msgs);
+      const sorted = msgs.sort(
+        (a, b) => new Date(a.sentAt || 0).getTime() - new Date(b.sentAt || 0).getTime()
+      );
+      setMessages(sorted);
     }
 
     // Auto-focus input
@@ -153,52 +169,95 @@ export default function MessagesPage() {
     (p) => p.uid !== currentUid
   );
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isSendingRef.current) return;
     if ((!messageInput.trim() && !attachedFile) || !activeConversationId) return;
+
+    isSendingRef.current = true;
+    setIsSending(true);
 
     const text = messageInput.trim();
     const mediaPayload = attachedFile ? { url: attachedFile.url, type: attachedFile.type } : undefined;
+    const clientMessageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
 
     setMessageInput('');
     setAttachedFile(null);
 
-    // Optimistically store in dataStore
-    dataStore.sendMessage(activeConversationId, text, {
+    const optimisticMsg: Message = {
+      messageId: clientMessageId,
+      conversationId: activeConversationId,
+      senderId: currentUid,
+      content: text,
       type: attachedFile ? 'media' : 'text',
       media: mediaPayload,
-    });
+      sharedContent: null,
+      sentAt: now,
+      deletedFor: [],
+      isDeletedForEveryone: false,
+      isDeleted: false,
+    };
 
-    // Write to Firestore in REAL mode
     if (
       dataMode === 'REAL' &&
       currentUid &&
       !currentUid.startsWith('user_anonymous') &&
       !currentUid.startsWith('guest_')
     ) {
+      // Optimistically append client message without duplicating
+      setMessages((prev) => [...prev.filter((m) => m.messageId !== clientMessageId), optimisticMsg]);
+      dataStore.addOptimisticMessage(activeConversationId, optimisticMsg);
+
       try {
-        await sendMessageInFirestore(activeConversationId, text, {
-          type: attachedFile ? 'media' : 'text',
-          media: mediaPayload,
-        });
+        await sendMessageInFirestore(
+          activeConversationId,
+          text,
+          {
+            type: attachedFile ? 'media' : 'text',
+            media: mediaPayload,
+          },
+          clientMessageId
+        );
       } catch (err) {
         console.error('[MessagesPage] Error sending message in Firestore:', err);
+        // Rollback optimistic message on failure
+        setMessages((prev) => prev.filter((m) => m.messageId !== clientMessageId));
+        dataStore.removeMessage(activeConversationId, clientMessageId);
+        alert('Failed to transmit message. Please check your connection.');
+      } finally {
+        isSendingRef.current = false;
+        setIsSending(false);
       }
-    }
+    } else {
+      // DEMO mode
+      dataStore.sendMessage(
+        activeConversationId,
+        text,
+        {
+          type: attachedFile ? 'media' : 'text',
+          media: mediaPayload,
+        },
+        clientMessageId
+      );
+      setMessages((prev) => [...prev.filter((m) => m.messageId !== clientMessageId), optimisticMsg]);
+      isSendingRef.current = false;
+      setIsSending(false);
 
-    // Simulate mock auto-reply for DEMO mode only
-    if (dataMode === 'DEMO' && activeConversationId && otherParticipant) {
-      setIsTyping(true);
-      setTimeout(() => {
-        setIsTyping(false);
-        const autoReplies = [
-          'Signal received! The telemetry looks solid.',
-          'Resonating with this analysis. Let me check the neural latency metrics.',
-          'Synthesizing this node into our local quantum cluster now.',
-        ];
-        const randomReply = autoReplies[Math.floor(Math.random() * autoReplies.length)];
-        dataStore.sendMessage(activeConversationId, randomReply);
-      }, 2000);
+      if (otherParticipant) {
+        setIsTyping(true);
+        setTimeout(() => {
+          setIsTyping(false);
+          const autoReplies = [
+            'Signal received! The telemetry looks solid.',
+            'Resonating with this analysis. Let me check the neural latency metrics.',
+            'Synthesizing this node into our local quantum cluster now.',
+          ];
+          const randomReply = autoReplies[Math.floor(Math.random() * autoReplies.length)];
+          dataStore.sendMessage(activeConversationId, randomReply);
+          setMessages(dataStore.getMessages(activeConversationId));
+        }, 2000);
+      }
     }
   };
 
@@ -219,10 +278,16 @@ export default function MessagesPage() {
   };
 
   const handleDeleteForMe = async () => {
-    if (activeConversationId && selectedMessageForDelete) {
-      const msgId = selectedMessageForDelete.messageId;
+    if (!activeConversationId || !selectedMessageForDelete || isDeleting) return;
+    const msgId = selectedMessageForDelete.messageId;
+
+    try {
+      setIsDeleting(true);
+      // Optimistically hide for current user
+      setMessages((prev) => prev.filter((m) => m.messageId !== msgId));
       dataStore.deleteMessageForMe(activeConversationId, msgId);
       setSelectedMessageForDelete(null);
+
       if (
         dataMode === 'REAL' &&
         currentUid &&
@@ -231,18 +296,44 @@ export default function MessagesPage() {
       ) {
         await deleteMessageForMeInFirestore(activeConversationId, msgId);
       }
+    } catch (err) {
+      console.error('[MessagesPage] Error deleting message for me:', err);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
   const handleDeleteForEveryone = async () => {
     if (
-      activeConversationId &&
-      selectedMessageForDelete &&
-      selectedMessageForDelete.senderId === currentUid
+      !activeConversationId ||
+      !selectedMessageForDelete ||
+      selectedMessageForDelete.senderId !== currentUid ||
+      isDeleting
     ) {
-      const msgId = selectedMessageForDelete.messageId;
+      return;
+    }
+    const msgId = selectedMessageForDelete.messageId;
+
+    try {
+      setIsDeleting(true);
+      // Optimistically mark as deleted
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === msgId
+            ? {
+                ...m,
+                content: 'This message was deleted',
+                isDeleted: true,
+                isDeletedForEveryone: true,
+                media: undefined,
+                sharedContent: null,
+              }
+            : m
+        )
+      );
       dataStore.deleteMessageForEveryone(activeConversationId, msgId);
       setSelectedMessageForDelete(null);
+
       if (
         dataMode === 'REAL' &&
         currentUid &&
@@ -251,6 +342,10 @@ export default function MessagesPage() {
       ) {
         await deleteMessageForEveryoneInFirestore(activeConversationId, msgId);
       }
+    } catch (err) {
+      console.error('[MessagesPage] Error deleting message for everyone:', err);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -395,7 +490,12 @@ export default function MessagesPage() {
               ) : (
                 messages.map((msg) => {
                   const isMe = msg.senderId === currentUid;
-                  const isDeleted = msg.isDeletedForEveryone;
+                  const isDeleted = Boolean(
+                    msg.isDeleted ||
+                      msg.isDeletedForEveryone ||
+                      msg.content === 'This message was deleted' ||
+                      msg.content === 'This message was deleted.'
+                  );
 
                   return (
                     <div
@@ -403,14 +503,14 @@ export default function MessagesPage() {
                       className={`flex flex-col w-full group ${isMe ? 'items-end' : 'items-start'}`}
                     >
                       <div className="flex items-center gap-2 max-w-[min(82%,680px)]">
-                        {/* Delete action trigger ONLY for sent messages */}
-                        {!isDeleted && isMe && (
+                        {/* Delete action trigger */}
+                        {!isDeleted && (
                           <button
                             type="button"
                             onClick={() => setSelectedMessageForDelete(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg bg-white/5 hover:bg-error/20 text-zinc-500 hover:text-error transition-all"
-                            title="Delete Sent Message"
-                            aria-label="Delete Sent Message"
+                            className="opacity-75 sm:opacity-0 sm:group-hover:opacity-100 p-1.5 rounded-lg bg-white/5 hover:bg-error/20 text-zinc-400 hover:text-error transition-all touch-manipulation min-h-[30px] min-w-[30px] flex items-center justify-center flex-shrink-0"
+                            title="Delete Message"
+                            aria-label="Delete Message"
                           >
                             <span className="material-symbols-outlined text-sm">delete</span>
                           </button>
@@ -419,16 +519,16 @@ export default function MessagesPage() {
                         <div
                           className={`min-w-0 p-3.5 sm:p-4 rounded-2xl text-xs sm:text-sm leading-relaxed space-y-2 break-words whitespace-pre-wrap ${
                             isDeleted
-                              ? 'bg-white/5 text-zinc-500 border border-white/5 italic'
+                              ? 'bg-white/[0.04] text-zinc-400 border border-white/5 italic'
                               : isMe
                               ? 'bg-gradient-to-r from-[#7a00ff] to-[#0066ff] text-white rounded-br-none shadow-lg shadow-purple-900/30'
                               : 'bg-[#1c1b1c] text-zinc-200 border border-white/10 rounded-bl-none'
                           }`}
                         >
                           {isDeleted ? (
-                            <div className="flex items-center gap-1.5">
-                              <span className="material-symbols-outlined text-sm">block</span>
-                              <span>This message was deleted</span>
+                            <div className="flex items-center gap-1.5 text-zinc-400 not-italic">
+                              <span className="material-symbols-outlined text-sm text-zinc-500">block</span>
+                              <span className="text-xs sm:text-sm italic">Message deleted</span>
                             </div>
                           ) : (
                             <>
@@ -464,7 +564,6 @@ export default function MessagesPage() {
                                       e.currentTarget.style.display = 'none';
                                     }}
                                   />
-
                                 </div>
                               )}
 
@@ -521,8 +620,8 @@ export default function MessagesPage() {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading}
-                  className="p-2.5 sm:p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-300 hover:text-white transition-all flex items-center justify-center"
+                  disabled={isUploading || isSending}
+                  className="p-2.5 sm:p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-300 hover:text-white transition-all flex items-center justify-center disabled:opacity-40 touch-manipulation"
                   title="Attach Photo or Video"
                   aria-label="Attach Photo or Video"
                 >
@@ -535,19 +634,32 @@ export default function MessagesPage() {
                   type="text"
                   ref={textInputRef}
                   value={messageInput}
+                  disabled={isSending}
                   onChange={(e) => setMessageInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage();
+                    }
+                  }}
                   placeholder="Type a message..."
-                  className="flex-1 min-w-0 bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl px-4 py-2.5 sm:py-3 text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+                  className="flex-1 min-w-0 bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl px-4 py-2.5 sm:py-3 text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all disabled:opacity-60"
                 />
 
                 <button
                   type="submit"
-                  disabled={!messageInput.trim() && !attachedFile}
-                  className="p-2.5 sm:p-3 rounded-xl bg-gradient-to-r from-[#7a00ff] to-[#0066ff] text-white hover:opacity-90 transition-all shadow-md shadow-purple-900/30 disabled:opacity-40 flex items-center justify-center flex-shrink-0"
+                  disabled={isSending || (!messageInput.trim() && !attachedFile)}
+                  className="p-2.5 sm:p-3 rounded-xl bg-gradient-to-r from-[#7a00ff] to-[#0066ff] text-white hover:opacity-90 transition-all shadow-md shadow-purple-900/30 disabled:opacity-40 flex items-center justify-center flex-shrink-0 touch-manipulation min-w-[42px] min-h-[42px]"
                   title="Send Message"
                   aria-label="Send Message"
                 >
-                  <span className="material-symbols-outlined text-lg sm:text-xl">send</span>
+                  {isSending ? (
+                    <span className="material-symbols-outlined text-lg sm:text-xl animate-spin">
+                      progress_activity
+                    </span>
+                  ) : (
+                    <span className="material-symbols-outlined text-lg sm:text-xl">send</span>
+                  )}
                 </button>
               </form>
             </div>
@@ -572,8 +684,10 @@ export default function MessagesPage() {
       {/* WhatsApp-Style Delete Message Options Modal */}
       <Modal
         isOpen={!!selectedMessageForDelete}
-        onClose={() => setSelectedMessageForDelete(null)}
+        onClose={() => !isDeleting && setSelectedMessageForDelete(null)}
         title="Delete Message"
+        variant="bottom-sheet"
+        maxWidth="sm"
       >
         <div className="space-y-4 py-2 text-white">
           <p className="text-xs text-zinc-300 leading-relaxed">
@@ -585,13 +699,21 @@ export default function MessagesPage() {
             {selectedMessageForDelete?.senderId === currentUid && (
               <button
                 type="button"
+                disabled={isDeleting}
                 onClick={handleDeleteForEveryone}
-                className="w-full p-3 rounded-xl bg-error/15 hover:bg-error/25 border border-error/30 text-error font-bold text-xs flex items-center justify-between transition-all text-left"
+                className="w-full p-3 rounded-xl bg-error/15 hover:bg-error/25 border border-error/30 text-error font-bold text-xs flex items-center justify-between transition-all text-left disabled:opacity-50 touch-manipulation"
               >
                 <div>
-                  <div className="font-bold">Delete for everyone</div>
+                  <div className="font-bold flex items-center gap-1.5">
+                    <span>Delete for everyone</span>
+                    {isDeleting && (
+                      <span className="material-symbols-outlined text-xs animate-spin">
+                        progress_activity
+                      </span>
+                    )}
+                  </div>
                   <div className="text-[11px] text-zinc-400 font-normal mt-0.5">
-                    Replaces the message with "This message was deleted" for all participants.
+                    Replaces the message with "Message deleted" for all participants.
                   </div>
                 </div>
                 <span className="material-symbols-outlined text-base flex-shrink-0 ml-2">delete_forever</span>
@@ -601,11 +723,19 @@ export default function MessagesPage() {
             {/* Delete for me */}
             <button
               type="button"
+              disabled={isDeleting}
               onClick={handleDeleteForMe}
-              className="w-full p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold text-xs flex items-center justify-between transition-all text-left"
+              className="w-full p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold text-xs flex items-center justify-between transition-all text-left disabled:opacity-50 touch-manipulation"
             >
               <div>
-                <div className="font-bold">Delete for me</div>
+                <div className="font-bold flex items-center gap-1.5">
+                  <span>Delete for me</span>
+                  {isDeleting && (
+                    <span className="material-symbols-outlined text-xs animate-spin">
+                      progress_activity
+                    </span>
+                  )}
+                </div>
                 <div className="text-[11px] text-zinc-400 font-normal mt-0.5">
                   Removes the message only from your device. Other participants can still see it.
                 </div>
@@ -617,8 +747,9 @@ export default function MessagesPage() {
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
             <button
               type="button"
+              disabled={isDeleting}
               onClick={() => setSelectedMessageForDelete(null)}
-              className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white"
+              className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white disabled:opacity-40"
             >
               Cancel
             </button>

@@ -32,12 +32,7 @@ import {
   createStoryInFirestore,
   getActiveStoriesFromFirestore,
 } from '../firestore/storyService';
-import {
-  sendMessageInFirestore,
-  deleteMessageForMeInFirestore,
-  deleteMessageForEveryoneInFirestore,
-  markConversationReadInFirestore,
-} from '../firestore/nexusService';
+import { markConversationReadInFirestore } from '../firestore/nexusService';
 import { logActivityEvent } from '../firestore/activityService';
 
 export type DataMode = 'REAL' | 'DEMO';
@@ -982,10 +977,15 @@ class DataStore {
     return list.filter((m) => !m.deletedFor?.includes(currentUid));
   }
 
-  public sendMessage(conversationId: string, content: string, payload?: Partial<Message>): Message {
+  public sendMessage(
+    conversationId: string,
+    content: string,
+    payload?: Partial<Message>,
+    clientMessageId?: string
+  ): Message {
     const currentUid = this.currentUser?.uid || 'user_anonymous';
     const newMsg: Message = {
-      messageId: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      messageId: clientMessageId || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       conversationId,
       senderId: currentUid,
       content,
@@ -995,12 +995,16 @@ class DataStore {
       sentAt: new Date().toISOString(),
       deletedFor: [],
       isDeletedForEveryone: false,
+      isDeleted: false,
     };
 
     if (!this.messages[conversationId]) {
       this.messages[conversationId] = [];
     }
-    this.messages[conversationId].push(newMsg);
+    // Prevent duplicate entries by messageId
+    if (!this.messages[conversationId].some((m) => m.messageId === newMsg.messageId)) {
+      this.messages[conversationId].push(newMsg);
+    }
 
     const conv = this.conversations.find((c) => c.conversationId === conversationId);
     if (conv) {
@@ -1016,16 +1020,41 @@ class DataStore {
 
     setStored(STORAGE_KEYS.MESSAGES, this.messages);
     this.notify();
-
-    if (this.dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous') && !currentUid.startsWith('guest_')) {
-      sendMessageInFirestore(conversationId, content, payload).catch((err) => {
-        console.error('[dataStore] Failed to send message in Firestore:', err);
-      });
-    }
-
     logActivityEvent('message_sent', { conversationId });
 
     return newMsg;
+  }
+
+  public addOptimisticMessage(conversationId: string, msg: Message): void {
+    if (!this.messages[conversationId]) {
+      this.messages[conversationId] = [];
+    }
+    if (!this.messages[conversationId].some((m) => m.messageId === msg.messageId)) {
+      this.messages[conversationId].push(msg);
+    }
+    const conv = this.conversations.find((c) => c.conversationId === conversationId);
+    if (conv) {
+      conv.lastMessage = {
+        content: msg.content || 'Shared an item',
+        senderId: msg.senderId,
+        sentAt: msg.sentAt,
+        type: msg.type,
+      };
+      conv.updatedAt = msg.sentAt;
+      setStored(STORAGE_KEYS.CONVERSATIONS, this.conversations);
+    }
+    setStored(STORAGE_KEYS.MESSAGES, this.messages);
+    this.notify();
+  }
+
+  public removeMessage(conversationId: string, messageId: string): void {
+    if (this.messages[conversationId]) {
+      this.messages[conversationId] = this.messages[conversationId].filter(
+        (m) => m.messageId !== messageId
+      );
+      setStored(STORAGE_KEYS.MESSAGES, this.messages);
+      this.notify();
+    }
   }
 
   /**
@@ -1042,12 +1071,6 @@ class DataStore {
       }
       setStored(STORAGE_KEYS.MESSAGES, this.messages);
       this.notify();
-
-      if (this.dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous') && !currentUid.startsWith('guest_')) {
-        deleteMessageForMeInFirestore(conversationId, messageId).catch((err) => {
-          console.error('[dataStore] Failed to delete message for me in Firestore:', err);
-        });
-      }
     }
   }
 
@@ -1056,10 +1079,10 @@ class DataStore {
    * Replaces content with "This message was deleted" and marks isDeletedForEveryone
    */
   public deleteMessageForEveryone(conversationId: string, messageId: string): void {
-    const currentUid = this.currentUser?.uid || 'user_anonymous';
     const msg = this.messages[conversationId]?.find((m) => m.messageId === messageId);
     if (msg) {
       msg.content = 'This message was deleted';
+      msg.isDeleted = true;
       msg.isDeletedForEveryone = true;
       msg.media = undefined;
       msg.sharedContent = null;
@@ -1072,12 +1095,6 @@ class DataStore {
       }
 
       this.notify();
-
-      if (this.dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous') && !currentUid.startsWith('guest_')) {
-        deleteMessageForEveryoneInFirestore(conversationId, messageId).catch((err) => {
-          console.error('[dataStore] Failed to delete message for everyone in Firestore:', err);
-        });
-      }
     }
   }
 

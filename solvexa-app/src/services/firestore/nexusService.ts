@@ -178,7 +178,8 @@ export async function getOrCreateFirestoreConversation(
 export async function sendMessageInFirestore(
   conversationId: string,
   content: string,
-  payload?: Partial<Message>
+  payload?: Partial<Message>,
+  clientMessageId?: string
 ): Promise<Message> {
   const currentUser = auth.currentUser;
   if (!currentUser) {
@@ -186,7 +187,7 @@ export async function sendMessageInFirestore(
   }
 
   try {
-    const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const messageId = clientMessageId || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
 
     const newMsg: Message = {
@@ -200,6 +201,7 @@ export async function sendMessageInFirestore(
       sentAt: now,
       deletedFor: [],
       isDeletedForEveryone: false,
+      isDeleted: false,
     };
 
     const msgRef = doc(db, CONVERSATIONS_COLLECTION, conversationId, 'messages', messageId);
@@ -267,6 +269,7 @@ export async function deleteMessageForEveryoneInFirestore(
 
   try {
     const msgRef = doc(db, CONVERSATIONS_COLLECTION, conversationId, 'messages', messageId);
+    const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
     const snap = await getDoc(msgRef);
     if (!snap.exists()) return;
 
@@ -275,12 +278,32 @@ export async function deleteMessageForEveryoneInFirestore(
       throw new Error('You can only delete your own transmissions for everyone.');
     }
 
+    const now = new Date().toISOString();
+
     await updateDoc(msgRef, {
-      content: 'This message was deleted.',
+      content: 'This message was deleted',
+      isDeleted: true,
       isDeletedForEveryone: true,
+      deletedAt: now,
+      deletedBy: currentUser.uid,
       media: null,
       sharedContent: null,
     });
+
+    // Update parent conversation's lastMessage if this was the last message
+    const convSnap = await getDoc(convRef).catch(() => null);
+    if (convSnap && convSnap.exists()) {
+      const convData = convSnap.data() as Conversation;
+      if (
+        convData.lastMessage &&
+        (convData.lastMessage.sentAt === data.sentAt || convData.lastMessage.content === data.content)
+      ) {
+        await updateDoc(convRef, {
+          'lastMessage.content': 'This message was deleted',
+          updatedAt: now,
+        }).catch((e) => console.warn('[nexusService] lastMessage update on delete error:', e));
+      }
+    }
   } catch (err) {
     console.warn('[nexusService] deleteMessageForEveryone warning:', err);
   }
