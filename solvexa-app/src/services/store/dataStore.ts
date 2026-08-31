@@ -1082,6 +1082,7 @@ class DataStore {
     const msg = this.messages[conversationId]?.find((m) => m.messageId === messageId);
     if (msg) {
       msg.content = 'This message was deleted';
+      msg.deleted = true;
       msg.isDeleted = true;
       msg.isDeletedForEveryone = true;
       msg.media = undefined;

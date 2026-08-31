@@ -35,8 +35,9 @@ export default function MessagesPage() {
   const [selectedMessageForDelete, setSelectedMessageForDelete] = useState<Message | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Send lock to prevent duplicate messages
-  const isSendingRef = useRef(false);
+  // Send lock and cooldown to prevent double-sends and race conditions
+  const sendLockRef = useRef(false);
+  const lastSendTimeRef = useRef(0);
   const [isSending, setIsSending] = useState(false);
 
   // Attached media state
@@ -126,12 +127,19 @@ export default function MessagesPage() {
       !currentUid.startsWith('guest_')
     ) {
       unsubMessages = subscribeToConversationMessages(activeConversationId, (firestoreMsgs) => {
-        // Filter out messages deleted for current viewer
-        const viewerFiltered = firestoreMsgs.filter(
-          (m) => !m.deletedFor || !m.deletedFor.includes(currentUid)
-        );
+        // Reconcile messages by canonical ID using Map to strictly eliminate any duplicates
+        const messageMap = new Map<string, Message>();
+        for (const m of firestoreMsgs) {
+          const id = m.messageId || (m as any).id;
+          if (id) {
+            // Filter out messages deleted for current viewer
+            if (!m.deletedFor || !m.deletedFor.includes(currentUid)) {
+              messageMap.set(id, { ...m, messageId: id });
+            }
+          }
+        }
         // Sort strictly chronologically by sentAt
-        const sorted = viewerFiltered.sort(
+        const sorted = Array.from(messageMap.values()).sort(
           (a, b) => new Date(a.sentAt || 0).getTime() - new Date(b.sentAt || 0).getTime()
         );
         setMessages(sorted);
@@ -171,93 +179,70 @@ export default function MessagesPage() {
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (isSendingRef.current) return;
-    if ((!messageInput.trim() && !attachedFile) || !activeConversationId) return;
 
-    isSendingRef.current = true;
-    setIsSending(true);
+    const now = Date.now();
+    // Re-entrancy and rapid double-tap / double-click guard (< 500ms cooldown)
+    if (sendLockRef.current || now - lastSendTimeRef.current < 500) {
+      return;
+    }
 
     const text = messageInput.trim();
-    const mediaPayload = attachedFile ? { url: attachedFile.url, type: attachedFile.type } : undefined;
-    const clientMessageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const now = new Date().toISOString();
+    if ((!text && !attachedFile) || !activeConversationId) return;
 
+    sendLockRef.current = true;
+    lastSendTimeRef.current = now;
+    setIsSending(true);
+
+    const mediaPayload = attachedFile ? { url: attachedFile.url, type: attachedFile.type } : undefined;
+
+    // Reset input fields immediately so UI responds instantly
     setMessageInput('');
     setAttachedFile(null);
+    if (textInputRef.current) {
+      textInputRef.current.value = '';
+    }
 
-    const optimisticMsg: Message = {
-      messageId: clientMessageId,
-      conversationId: activeConversationId,
-      senderId: currentUid,
-      content: text,
-      type: attachedFile ? 'media' : 'text',
-      media: mediaPayload,
-      sharedContent: null,
-      sentAt: now,
-      deletedFor: [],
-      isDeletedForEveryone: false,
-      isDeleted: false,
-    };
-
-    if (
-      dataMode === 'REAL' &&
-      currentUid &&
-      !currentUid.startsWith('user_anonymous') &&
-      !currentUid.startsWith('guest_')
-    ) {
-      // Optimistically append client message without duplicating
-      setMessages((prev) => [...prev.filter((m) => m.messageId !== clientMessageId), optimisticMsg]);
-      dataStore.addOptimisticMessage(activeConversationId, optimisticMsg);
-
-      try {
-        await sendMessageInFirestore(
-          activeConversationId,
-          text,
-          {
-            type: attachedFile ? 'media' : 'text',
-            media: mediaPayload,
-          },
-          clientMessageId
-        );
-      } catch (err) {
-        console.error('[MessagesPage] Error sending message in Firestore:', err);
-        // Rollback optimistic message on failure
-        setMessages((prev) => prev.filter((m) => m.messageId !== clientMessageId));
-        dataStore.removeMessage(activeConversationId, clientMessageId);
-        alert('Failed to transmit message. Please check your connection.');
-      } finally {
-        isSendingRef.current = false;
-        setIsSending(false);
-      }
-    } else {
-      // DEMO mode
-      dataStore.sendMessage(
-        activeConversationId,
-        text,
-        {
+    try {
+      if (
+        dataMode === 'REAL' &&
+        currentUid &&
+        !currentUid.startsWith('user_anonymous') &&
+        !currentUid.startsWith('guest_')
+      ) {
+        // In REAL mode, Firestore realtime onSnapshot is the single source of truth
+        await sendMessageInFirestore(activeConversationId, text, {
           type: attachedFile ? 'media' : 'text',
           media: mediaPayload,
-        },
-        clientMessageId
-      );
-      setMessages((prev) => [...prev.filter((m) => m.messageId !== clientMessageId), optimisticMsg]);
-      isSendingRef.current = false;
-      setIsSending(false);
+        });
+      } else {
+        // DEMO mode
+        dataStore.sendMessage(activeConversationId, text, {
+          type: attachedFile ? 'media' : 'text',
+          media: mediaPayload,
+        });
+        setMessages(dataStore.getMessages(activeConversationId));
 
-      if (otherParticipant) {
-        setIsTyping(true);
-        setTimeout(() => {
-          setIsTyping(false);
-          const autoReplies = [
-            'Signal received! The telemetry looks solid.',
-            'Resonating with this analysis. Let me check the neural latency metrics.',
-            'Synthesizing this node into our local quantum cluster now.',
-          ];
-          const randomReply = autoReplies[Math.floor(Math.random() * autoReplies.length)];
-          dataStore.sendMessage(activeConversationId, randomReply);
-          setMessages(dataStore.getMessages(activeConversationId));
-        }, 2000);
+        if (otherParticipant) {
+          setIsTyping(true);
+          setTimeout(() => {
+            setIsTyping(false);
+            const autoReplies = [
+              'Signal received! The telemetry looks solid.',
+              'Resonating with this analysis. Let me check the neural latency metrics.',
+              'Synthesizing this node into our local quantum cluster now.',
+            ];
+            const randomReply = autoReplies[Math.floor(Math.random() * autoReplies.length)];
+            dataStore.sendMessage(activeConversationId, randomReply);
+            setMessages(dataStore.getMessages(activeConversationId));
+          }, 2000);
+        }
       }
+    } catch (err) {
+      console.error('[MessagesPage] Error transmitting message:', err);
+      alert('Failed to transmit message. Please check your connection and try again.');
+    } finally {
+      sendLockRef.current = false;
+      setIsSending(false);
     }
   };
 
@@ -283,9 +268,6 @@ export default function MessagesPage() {
 
     try {
       setIsDeleting(true);
-      // Optimistically hide for current user
-      setMessages((prev) => prev.filter((m) => m.messageId !== msgId));
-      dataStore.deleteMessageForMe(activeConversationId, msgId);
       setSelectedMessageForDelete(null);
 
       if (
@@ -295,6 +277,9 @@ export default function MessagesPage() {
         !currentUid.startsWith('guest_')
       ) {
         await deleteMessageForMeInFirestore(activeConversationId, msgId);
+      } else {
+        dataStore.deleteMessageForMe(activeConversationId, msgId);
+        setMessages(dataStore.getMessages(activeConversationId));
       }
     } catch (err) {
       console.error('[MessagesPage] Error deleting message for me:', err);
@@ -316,22 +301,6 @@ export default function MessagesPage() {
 
     try {
       setIsDeleting(true);
-      // Optimistically mark as deleted
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.messageId === msgId
-            ? {
-                ...m,
-                content: 'This message was deleted',
-                isDeleted: true,
-                isDeletedForEveryone: true,
-                media: undefined,
-                sharedContent: null,
-              }
-            : m
-        )
-      );
-      dataStore.deleteMessageForEveryone(activeConversationId, msgId);
       setSelectedMessageForDelete(null);
 
       if (
@@ -341,6 +310,9 @@ export default function MessagesPage() {
         !currentUid.startsWith('guest_')
       ) {
         await deleteMessageForEveryoneInFirestore(activeConversationId, msgId);
+      } else {
+        dataStore.deleteMessageForEveryone(activeConversationId, msgId);
+        setMessages(dataStore.getMessages(activeConversationId));
       }
     } catch (err) {
       console.error('[MessagesPage] Error deleting message for everyone:', err);
@@ -491,7 +463,8 @@ export default function MessagesPage() {
                 messages.map((msg) => {
                   const isMe = msg.senderId === currentUid;
                   const isDeleted = Boolean(
-                    msg.isDeleted ||
+                    msg.deleted ||
+                      msg.isDeleted ||
                       msg.isDeletedForEveryone ||
                       msg.content === 'This message was deleted' ||
                       msg.content === 'This message was deleted.'
@@ -499,7 +472,7 @@ export default function MessagesPage() {
 
                   return (
                     <div
-                      key={msg.messageId}
+                      key={msg.messageId || (msg as any).id}
                       className={`flex flex-col w-full group ${isMe ? 'items-end' : 'items-start'}`}
                     >
                       <div className="flex items-center gap-2 max-w-[min(82%,680px)]">
@@ -636,12 +609,6 @@ export default function MessagesPage() {
                   value={messageInput}
                   disabled={isSending}
                   onChange={(e) => setMessageInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMessage();
-                    }
-                  }}
                   placeholder="Type a message..."
                   className="flex-1 min-w-0 bg-[#1c1b1c] border border-white/10 focus:border-primary rounded-xl px-4 py-2.5 sm:py-3 text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all disabled:opacity-60"
                 />

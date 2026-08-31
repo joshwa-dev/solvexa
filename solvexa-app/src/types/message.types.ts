@@ -48,10 +48,13 @@ export interface Message {
   media?: MediaItem;
   sharedContent: SharedContent | null;
   sentAt: any;
-  editedAt?: any;
+  id?: string;
+  deleted?: boolean;
   isDeleted?: boolean;
   deletedFor?: string[];
   isDeletedForEveryone?: boolean;
+  deletedAt?: any;
+  deletedBy?: string;
   read?: boolean;
   readAt?: any;
   readBy?: Record<string, any>;
