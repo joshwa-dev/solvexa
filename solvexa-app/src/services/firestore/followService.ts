@@ -11,6 +11,7 @@ import {
   getDocs,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
+import type { SolvexaUser } from '../../types/user.types';
 
 const FOLLOWS_COLLECTION = 'follows';
 const USERS_COLLECTION = 'users';
@@ -168,4 +169,78 @@ export async function getFollowerIds(userId: string): Promise<string[]> {
     console.warn('[followService] getFollowerIds error:', err);
     return [];
   }
+}
+
+/**
+ * Retrieves the full user profile list of followers for a given user
+ */
+export async function getFollowersWithProfiles(
+  userId: string,
+  currentViewerUid?: string
+): Promise<SolvexaUser[]> {
+  if (!userId) return [];
+  const followerIds = await getFollowerIds(userId);
+  if (followerIds.length === 0) return [];
+
+  const profiles: SolvexaUser[] = [];
+  const followingSet = currentViewerUid
+    ? new Set(await getFollowingIds(currentViewerUid))
+    : new Set<string>();
+
+  await Promise.all(
+    followerIds.map(async (fId) => {
+      try {
+        const uDoc = await getDoc(doc(db, USERS_COLLECTION, fId));
+        if (uDoc.exists()) {
+          const uData = uDoc.data() as SolvexaUser;
+          profiles.push({
+            ...uData,
+            uid: fId,
+            isFollowing: followingSet.has(fId),
+          });
+        }
+      } catch (err) {
+        console.warn(`[followService] Error loading follower profile ${fId}:`, err);
+      }
+    })
+  );
+
+  return profiles;
+}
+
+/**
+ * Retrieves the full user profile list of accounts that the specified user is following
+ */
+export async function getFollowingWithProfiles(
+  userId: string,
+  currentViewerUid?: string
+): Promise<SolvexaUser[]> {
+  if (!userId) return [];
+  const followingIds = await getFollowingIds(userId);
+  if (followingIds.length === 0) return [];
+
+  const profiles: SolvexaUser[] = [];
+  const viewerFollowingSet = currentViewerUid
+    ? new Set(await getFollowingIds(currentViewerUid))
+    : new Set<string>();
+
+  await Promise.all(
+    followingIds.map(async (fId) => {
+      try {
+        const uDoc = await getDoc(doc(db, USERS_COLLECTION, fId));
+        if (uDoc.exists()) {
+          const uData = uDoc.data() as SolvexaUser;
+          profiles.push({
+            ...uData,
+            uid: fId,
+            isFollowing: viewerFollowingSet.has(fId),
+          });
+        }
+      } catch (err) {
+        console.warn(`[followService] Error loading following profile ${fId}:`, err);
+      }
+    })
+  );
+
+  return profiles;
 }

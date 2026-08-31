@@ -12,10 +12,16 @@ import { Modal } from '../../components/common/Modal';
 import { MediaViewer, type MediaViewerItem } from '../../components/common/MediaViewer';
 import { uploadMediaFile, getSignalThumbnail } from '../../services/storage/mediaUpload';
 import { updateUserProfile, getUserProfile, getUserByUsername } from '../../services/auth/profileService';
-import { followUser, unfollowUser, isUserFollowing } from '../../services/firestore/followService';
+import {
+  followUser,
+  unfollowUser,
+  isUserFollowing,
+  getFollowersWithProfiles,
+  getFollowingWithProfiles,
+} from '../../services/firestore/followService';
 import { getOrCreateFirestoreConversation } from '../../services/firestore/nexusService';
 import { EmptyState } from '../../components/common/EmptyState';
-import { formatRelativeTime } from '../../lib/firestoreUtils';
+import { formatRelativeTime, formatJoinedDate } from '../../lib/firestoreUtils';
 
 export default function ProfilePage() {
   const { username } = useParams<{ username?: string }>();
@@ -33,6 +39,9 @@ export default function ProfilePage() {
 
   // Modals for Followers / Following lists
   const [connectionModalType, setConnectionModalType] = useState<'followers' | 'following' | null>(null);
+  const [connectionUsers, setConnectionUsers] = useState<SolvexaUser[]>([]);
+  const [isConnectionsLoading, setIsConnectionsLoading] = useState(false);
+  const [connectionActionPending, setConnectionActionPending] = useState<Record<string, boolean>>({});
   const [isResonanceModalOpen, setIsResonanceModalOpen] = useState(false);
 
   // Edit fields
@@ -410,25 +419,39 @@ export default function ProfilePage() {
   const handleDirectMessage = async () => {
     if (!user || isOpeningChat) return;
 
+    const currentUid = solvexaUser?.uid || firebaseUser?.uid;
+    if (!currentUid || currentUid === 'user_anonymous' || currentUid.startsWith('guest_')) {
+      setShareToast('Please sign in to send messages.');
+      setTimeout(() => setShareToast(null), 3000);
+      return;
+    }
+
+    if (currentUid === user.uid) {
+      setShareToast('Cannot message yourself.');
+      setTimeout(() => setShareToast(null), 3000);
+      return;
+    }
+
     try {
       setIsOpeningChat(true);
 
       const targetData = {
         uid: user.uid,
-        displayName: user.displayName,
-        username: user.username,
-        photoURL: user.photoURL,
+        displayName: user.displayName || 'Solvexa Pioneer',
+        username: user.username || 'pioneer',
+        photoURL: resolveAvatarSrc(user) || null,
       };
 
-      const currentUid = solvexaUser?.uid || firebaseUser?.uid || 'user_anonymous';
-
-      if (
-        dataMode === 'REAL' &&
-        currentUid &&
-        !currentUid.startsWith('user_anonymous') &&
-        !currentUid.startsWith('guest_')
-      ) {
-        const conv = await getOrCreateFirestoreConversation(targetData);
+      if (dataMode === 'REAL') {
+        const viewerUser = {
+          uid: currentUid,
+          displayName: solvexaUser?.displayName || firebaseUser?.displayName || 'Solvexa Pioneer',
+          username:
+            solvexaUser?.username ||
+            (firebaseUser?.email?.split('@')[0] || `user_${currentUid.slice(0, 5)}`),
+          photoURL: resolveAvatarSrc(solvexaUser, firebaseUser, true),
+        };
+        const conv = await getOrCreateFirestoreConversation(targetData, viewerUser);
         dataStore.addOrUpdateConversation(conv);
         navigate(`/messages?id=${conv.conversationId}`);
       } else {
@@ -438,8 +461,103 @@ export default function ProfilePage() {
     } catch (err: unknown) {
       console.error('[ProfilePage] Direct message failed:', err);
       setIsOpeningChat(false);
-      setShareToast('Unable to open conversation. Please try again.');
-      setTimeout(() => setShareToast(null), 3000);
+      const e = err as Error;
+      setShareToast(e.message || 'Unable to open conversation. Please try again.');
+      setTimeout(() => setShareToast(null), 3500);
+    }
+  };
+
+  const handleOpenConnectionsModal = async (type: 'followers' | 'following') => {
+    if (!user) return;
+    setConnectionModalType(type);
+    setIsConnectionsLoading(true);
+    setConnectionUsers([]);
+
+    try {
+      const currentViewerUid = solvexaUser?.uid || firebaseUser?.uid;
+      if (dataMode === 'REAL' && user.uid && !user.uid.startsWith('user_')) {
+        if (type === 'followers') {
+          const list = await getFollowersWithProfiles(user.uid, currentViewerUid);
+          setConnectionUsers(list);
+        } else {
+          const list = await getFollowingWithProfiles(user.uid, currentViewerUid);
+          setConnectionUsers(list);
+        }
+      } else {
+        // DEMO Mode: resolve demo followers / following
+        const allDemo = dataStore.getUsers().filter((u) => u.uid !== user.uid);
+        const limit = type === 'followers' ? user.followerCount || 2 : user.followingCount || 2;
+        setConnectionUsers(allDemo.slice(0, Math.max(1, limit)));
+      }
+    } catch (err) {
+      console.error('[ProfilePage] Error fetching connections:', err);
+      setConnectionUsers([]);
+    } finally {
+      setIsConnectionsLoading(false);
+    }
+  };
+
+  const handleToggleFollowInModal = async (targetUser: SolvexaUser) => {
+    const targetUid = targetUser.uid;
+    if (!targetUid || connectionActionPending[targetUid]) return;
+
+    const currentUid = solvexaUser?.uid || firebaseUser?.uid;
+    if (!currentUid || currentUid === targetUid) return;
+
+    setConnectionActionPending((prev) => ({ ...prev, [targetUid]: true }));
+
+    const nextFollowing = !targetUser.isFollowing;
+
+    // Optimistic update in list
+    setConnectionUsers((prev) =>
+      prev.map((u) =>
+        u.uid === targetUid
+          ? {
+              ...u,
+              isFollowing: nextFollowing,
+              followerCount: Math.max(0, (u.followerCount || 0) + (nextFollowing ? 1 : -1)),
+            }
+          : u
+      )
+    );
+
+    // If viewing own profile's Following modal and toggling follow:
+    if (isOwnProfile && connectionModalType === 'following' && !nextFollowing) {
+      setUser((prev) =>
+        prev ? { ...prev, followingCount: Math.max(0, (prev.followingCount || 0) - 1) } : prev
+      );
+    } else if (isOwnProfile && nextFollowing) {
+      setUser((prev) =>
+        prev ? { ...prev, followingCount: (prev.followingCount || 0) + 1 } : prev
+      );
+    }
+
+    try {
+      if (dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous')) {
+        if (nextFollowing) {
+          await followUser(currentUid, targetUid);
+        } else {
+          await unfollowUser(currentUid, targetUid);
+        }
+      } else {
+        dataStore.toggleFollowUser(targetUid, nextFollowing);
+      }
+    } catch (err) {
+      console.error('[ProfilePage] Error toggling follow in modal:', err);
+      // Rollback
+      setConnectionUsers((prev) =>
+        prev.map((u) =>
+          u.uid === targetUid
+            ? {
+                ...u,
+                isFollowing: !nextFollowing,
+                followerCount: Math.max(0, (u.followerCount || 0) - (nextFollowing ? 1 : -1)),
+              }
+            : u
+        )
+      );
+    } finally {
+      setConnectionActionPending((prev) => ({ ...prev, [targetUid]: false }));
     }
   };
 
@@ -816,7 +934,7 @@ export default function ProfilePage() {
             <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 text-xs text-zinc-400 pt-2">
               <div className="flex items-center gap-1.5 text-zinc-400">
                 <span className="material-symbols-outlined text-sm text-zinc-500">calendar_month</span>
-                <span>Joined {new Date(user.createdAt || Date.now()).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</span>
+                <span>{formatJoinedDate(user.createdAt)}</span>
               </div>
               {user.location && (
                 <div className="flex items-center gap-1.5">
@@ -841,7 +959,7 @@ export default function ProfilePage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 pt-5 border-t border-white/10 w-full">
               <button
                 type="button"
-                onClick={() => setConnectionModalType('followers')}
+                onClick={() => handleOpenConnectionsModal('followers')}
                 className="flex flex-col items-center justify-center p-3.5 sm:p-4 rounded-2xl bg-white/[0.03] hover:bg-white/5 border border-white/5 hover:border-white/15 transition-all text-center group min-w-0"
               >
                 <div className="text-xl sm:text-2xl font-extrabold text-white group-hover:text-primary transition-colors tracking-tight">
@@ -852,7 +970,7 @@ export default function ProfilePage() {
 
               <button
                 type="button"
-                onClick={() => setConnectionModalType('following')}
+                onClick={() => handleOpenConnectionsModal('following')}
                 className="flex flex-col items-center justify-center p-3.5 sm:p-4 rounded-2xl bg-white/[0.03] hover:bg-white/5 border border-white/5 hover:border-white/15 transition-all text-center group min-w-0"
               >
                 <div className="text-xl sm:text-2xl font-extrabold text-white group-hover:text-primary transition-colors tracking-tight">
@@ -1503,49 +1621,116 @@ export default function ProfilePage() {
       {/* =========================================================================
           FOLLOWERS / FOLLOWING MODAL
          ========================================================================= */}
+      {/* =========================================================================
+          FOLLOWERS / FOLLOWING MODAL (Mobile Bottom-Sheet / Desktop Centered)
+         ========================================================================= */}
       <Modal
         isOpen={!!connectionModalType}
         onClose={() => setConnectionModalType(null)}
-        title={connectionModalType === 'followers' ? 'Orbit Followers' : 'Orbit Following'}
+        title={connectionModalType === 'followers' ? 'Followers' : 'Following'}
+        variant="bottom-sheet"
+        maxWidth="md"
       >
-        <div className="space-y-3 py-2 text-white max-h-96 overflow-y-auto custom-scrollbar">
-          {networkUsers.length === 0 ? (
-            <div className="text-center py-8 text-zinc-500 text-xs">
-              No connections found in this frequency tier.
+        <div className="space-y-3 py-1 text-white min-h-[160px] max-h-[60dvh] sm:max-h-96 overflow-y-auto custom-scrollbar pr-0.5">
+          {isConnectionsLoading ? (
+            <div className="space-y-3 py-4 animate-pulse">
+              {[1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.02] border border-white/5"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-white/10" />
+                    <div className="space-y-1.5">
+                      <div className="w-28 h-3.5 bg-white/10 rounded-md" />
+                      <div className="w-20 h-2.5 bg-white/5 rounded-md" />
+                    </div>
+                  </div>
+                  <div className="w-20 h-8 rounded-xl bg-white/10" />
+                </div>
+              ))}
+            </div>
+          ) : connectionUsers.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-10 text-center px-4">
+              <div className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mb-3">
+                <span className="material-symbols-outlined text-2xl text-zinc-500">
+                  {connectionModalType === 'followers' ? 'group_off' : 'person_search'}
+                </span>
+              </div>
+              <div className="text-sm font-semibold text-zinc-300 mb-1">
+                {connectionModalType === 'followers' ? 'No followers yet' : 'Not following anyone yet'}
+              </div>
+              <div className="text-xs text-zinc-500 max-w-xs leading-relaxed">
+                {connectionModalType === 'followers'
+                  ? "When other pioneers connect with this node, they'll appear here."
+                  : 'Connect with creators and explorers across the Solvexa mesh.'}
+              </div>
             </div>
           ) : (
-            networkUsers.map((conn) => (
-              <div
-                key={conn.uid}
-                className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5 hover:border-white/10 transition-all"
-              >
-                <div
-                  className="flex items-center gap-3 cursor-pointer min-w-0"
-                  onClick={() => {
-                    setConnectionModalType(null);
-                    navigate(`/profile/${conn.uid || conn.username}`);
-                  }}
-                >
-                  <Avatar src={resolveAvatarSrc(conn)} name={conn.displayName} size="md" />
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-white truncate">{conn.displayName}</div>
-                    <div className="text-[10px] text-zinc-400 truncate">@{conn.username}</div>
-                  </div>
-                </div>
+            connectionUsers.map((conn) => {
+              const isCurrentViewer =
+                (solvexaUser?.uid && conn.uid === solvexaUser.uid) ||
+                (firebaseUser?.uid && conn.uid === firebaseUser.uid);
+              const isPending = !!connectionActionPending[conn.uid];
 
-                <button
-                  type="button"
-                  onClick={() => dataStore.toggleFollowUser(conn.uid)}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    conn.isFollowing
-                      ? 'bg-white/10 text-zinc-300 hover:bg-error/20 hover:text-error border border-white/15'
-                      : 'bg-primary/20 text-primary border border-primary/30'
-                  }`}
+              return (
+                <div
+                  key={conn.uid}
+                  className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5 hover:border-white/15 transition-all group"
                 >
-                  {conn.isFollowing ? 'Following' : 'Follow'}
-                </button>
-              </div>
-            ))
+                  <div
+                    className="flex items-center gap-3 cursor-pointer min-w-0 flex-1 pr-2"
+                    onClick={() => {
+                      setConnectionModalType(null);
+                      navigate(`/profile/${conn.uid || conn.username}`);
+                    }}
+                  >
+                    <Avatar
+                      src={resolveAvatarSrc(conn)}
+                      name={conn.displayName || 'Pioneer'}
+                      size="md"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-white truncate group-hover:text-primary transition-colors">
+                        {conn.displayName || 'Pioneer'}
+                      </div>
+                      <div className="text-[11px] text-zinc-400 truncate">
+                        @{conn.username || 'pioneer'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {!isCurrentViewer && (
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={() => handleToggleFollowInModal(conn)}
+                      className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 touch-manipulation disabled:opacity-50 flex-shrink-0 ${
+                        conn.isFollowing
+                          ? 'bg-white/10 text-zinc-300 hover:bg-error/20 hover:text-error border border-white/15'
+                          : 'bg-gradient-to-r from-[#7a00ff] to-[#0066ff] text-white hover:opacity-90 shadow-md shadow-purple-900/30'
+                      }`}
+                    >
+                      {isPending ? (
+                        <span className="material-symbols-outlined text-xs animate-spin">
+                          progress_activity
+                        </span>
+                      ) : conn.isFollowing ? (
+                        <>
+                          <span className="material-symbols-outlined text-xs">check</span>
+                          <span>Following</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="material-symbols-outlined text-xs">person_add</span>
+                          <span>Follow</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </Modal>

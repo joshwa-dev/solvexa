@@ -100,25 +100,41 @@ export async function getOrCreateFirestoreConversation(
     displayName: string;
     username: string;
     photoURL?: string | null;
+  },
+  viewerUser?: {
+    uid: string;
+    displayName?: string;
+    username?: string;
+    photoURL?: string | null;
   }
 ): Promise<Conversation> {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Authentication required.');
+  const currentUid = viewerUser?.uid || auth.currentUser?.uid;
+  if (!currentUid || currentUid === 'user_anonymous' || currentUid.startsWith('guest_')) {
+    throw new Error('Authentication required to message.');
   }
 
-  const currentUid = currentUser.uid;
+  if (currentUid === targetUser.uid) {
+    throw new Error('Cannot start a conversation with yourself.');
+  }
+
   const conversationId = getDirectConversationId(currentUid, targetUser.uid);
+  const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
 
   try {
-    const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
-    const snap = await getDoc(convRef);
-
-    if (snap.exists()) {
+    const snap = await getDoc(convRef).catch(() => null);
+    if (snap && snap.exists()) {
       return snap.data() as Conversation;
     }
 
     const now = new Date().toISOString();
+    const currentDisplayName =
+      viewerUser?.displayName || auth.currentUser?.displayName || 'Solvexa Pioneer';
+    const currentUsername =
+      viewerUser?.username ||
+      (auth.currentUser?.email?.split('@')[0] || `user_${currentUid.slice(0, 5)}`)
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '_');
+    const currentPhoto = viewerUser?.photoURL || auth.currentUser?.photoURL || null;
 
     const newConv: Conversation = {
       conversationId,
@@ -127,15 +143,9 @@ export async function getOrCreateFirestoreConversation(
       participantDetails: [
         {
           uid: currentUid,
-          displayName: currentUser.displayName || 'Solvexa Pioneer',
-          username: (
-            currentUser.displayName ||
-            currentUser.email?.split('@')[0] ||
-            `user_${currentUid.slice(0, 5)}`
-          )
-            .toLowerCase()
-            .replace(/[^a-z0-9_]/g, '_'),
-          photoURL: currentUser.photoURL || null,
+          displayName: currentDisplayName,
+          username: currentUsername,
+          photoURL: currentPhoto,
         },
         {
           uid: targetUser.uid,
@@ -153,10 +163,10 @@ export async function getOrCreateFirestoreConversation(
       createdBy: currentUid,
     };
 
-    await setDoc(convRef, sanitizeForFirestore(newConv));
+    await setDoc(convRef, sanitizeForFirestore(newConv), { merge: true });
     return newConv;
   } catch (error: unknown) {
-    console.error('[nexusService] createConversation error:', error);
+    console.error('[nexusService] getOrCreateFirestoreConversation error:', error);
     const firestoreError = error as { code?: string; message?: string };
     throw new Error(mapFirestoreError(firestoreError));
   }
