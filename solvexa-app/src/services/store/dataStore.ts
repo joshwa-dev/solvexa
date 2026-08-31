@@ -265,6 +265,10 @@ class DataStore {
   public clearUserSession(): void {
     localStorage.removeItem(STORAGE_KEYS.USER);
     localStorage.removeItem('solvexa_guest_mode');
+    localStorage.removeItem(STORAGE_KEYS.CONVERSATIONS);
+    localStorage.removeItem(STORAGE_KEYS.MESSAGES);
+    localStorage.removeItem(STORAGE_KEYS.NOTIFICATIONS);
+    localStorage.removeItem(STORAGE_KEYS.USERS);
     this.dataMode = 'REAL';
     localStorage.setItem(STORAGE_KEYS.MODE, 'REAL');
     this.currentUser = { ...ANONYMOUS_USER_SKELETON };
@@ -280,6 +284,9 @@ class DataStore {
     setStored(STORAGE_KEYS.USER, this.currentUser);
     setStored(STORAGE_KEYS.POSTS, this.posts);
     setStored(STORAGE_KEYS.SIGNALS, this.signals);
+    setStored(STORAGE_KEYS.CONVERSATIONS, this.conversations);
+    setStored(STORAGE_KEYS.MESSAGES, this.messages);
+    setStored(STORAGE_KEYS.USERS, this.users);
 
     this.notify();
   }
@@ -400,30 +407,75 @@ class DataStore {
     this.notify();
   }
 
-  public getUser(uid: string): SolvexaUser | undefined {
-    if (!uid) return undefined;
-    if (this.currentUser && (this.currentUser.uid === uid || this.currentUser.username?.toLowerCase() === uid.toLowerCase())) {
+  public getUser(idOrUsername: string): SolvexaUser | undefined {
+    if (!idOrUsername) return undefined;
+    const clean = idOrUsername.trim().toLowerCase().replace(/^@/, '');
+
+    // 1. Check currentUser first
+    if (
+      this.currentUser &&
+      (this.currentUser.uid === idOrUsername ||
+        this.currentUser.username?.toLowerCase() === clean)
+    ) {
       return this.currentUser;
     }
+
+    // 2. Check cached/in-memory users
     const all = this.getUsers();
-    return all.find((u) => u.uid === uid || u.username?.toLowerCase() === uid.toLowerCase());
+    const found = all.find(
+      (u) =>
+        u.uid === idOrUsername ||
+        u.username?.toLowerCase() === clean ||
+        u.displayName?.toLowerCase() === clean
+    );
+    if (found) return found;
+
+    // 3. Fallback to MOCK_USERS if in DEMO mode or mock id
+    if (
+      this.dataMode === 'DEMO' ||
+      idOrUsername.startsWith('user_') ||
+      idOrUsername.startsWith('usr_')
+    ) {
+      const mockFound = MOCK_USERS.find(
+        (u) =>
+          u.uid === idOrUsername ||
+          u.username?.toLowerCase() === clean ||
+          u.displayName?.toLowerCase() === clean
+      );
+      if (mockFound) return mockFound;
+    }
+
+    return undefined;
   }
 
-
-  public toggleFollowUser(uid: string): boolean {
-    const user = this.users.find((u) => u.uid === uid);
+  public toggleFollowUser(uid: string, forceState?: boolean): boolean {
+    let user = this.users.find((u) => u.uid === uid);
+    if (!user && this.dataMode === 'DEMO') {
+      const mock = MOCK_USERS.find((u) => u.uid === uid);
+      if (mock) {
+        user = { ...mock };
+        this.users.push(user);
+      }
+    }
     if (!user) return false;
 
-    user.isFollowing = !user.isFollowing;
-    user.followerCount += user.isFollowing ? 1 : -1;
+    const nextState = typeof forceState === 'boolean' ? forceState : !user.isFollowing;
+    if (user.isFollowing === nextState) return nextState;
+
+    user.isFollowing = nextState;
+    user.followerCount = Math.max(0, (user.followerCount || 0) + (nextState ? 1 : -1));
+
     if (this.currentUser) {
-      this.currentUser.followingCount = Math.max(0, this.currentUser.followingCount + (user.isFollowing ? 1 : -1));
+      this.currentUser.followingCount = Math.max(
+        0,
+        (this.currentUser.followingCount || 0) + (nextState ? 1 : -1)
+      );
       setStored(STORAGE_KEYS.USER, this.currentUser);
     }
 
     setStored(STORAGE_KEYS.USERS, this.users);
     this.notify();
-    return !!user.isFollowing;
+    return user.isFollowing;
   }
 
   public addIdentityCard(card: IdentityCard): void {
@@ -868,15 +920,19 @@ class DataStore {
     photoURL?: string | null;
   }): Conversation {
     const currentUid = this.currentUser?.uid || 'user_anonymous';
+    const sortedUids = [currentUid, targetUser.uid].sort();
+    const deterministicId = `direct_${sortedUids[0]}_${sortedUids[1]}`;
+
     const existing = this.conversations.find((c) =>
-      c.participants.includes(targetUser.uid) && c.participants.includes(currentUid)
+      c.conversationId === deterministicId ||
+      (c.type === 'direct' && c.participants.includes(targetUser.uid) && c.participants.includes(currentUid))
     );
     if (existing) {
       return existing;
     }
 
     const newConv: Conversation = {
-      conversationId: `conv_${Date.now()}`,
+      conversationId: deterministicId,
       type: 'direct',
       participants: [currentUid, targetUser.uid],
       participantDetails: [
@@ -903,11 +959,21 @@ class DataStore {
     };
 
     this.conversations = [newConv, ...this.conversations];
-    this.messages[newConv.conversationId] = [];
     setStored(STORAGE_KEYS.CONVERSATIONS, this.conversations);
-    setStored(STORAGE_KEYS.MESSAGES, this.messages);
     this.notify();
     return newConv;
+  }
+
+  public addOrUpdateConversation(conv: Conversation): void {
+    if (!conv || !conv.conversationId) return;
+    const index = this.conversations.findIndex((c) => c.conversationId === conv.conversationId);
+    if (index >= 0) {
+      this.conversations[index] = { ...this.conversations[index], ...conv };
+    } else {
+      this.conversations = [conv, ...this.conversations];
+    }
+    setStored(STORAGE_KEYS.CONVERSATIONS, this.conversations);
+    this.notify();
   }
 
   public getMessages(conversationId: string): Message[] {
@@ -1082,7 +1148,7 @@ class DataStore {
         !currentUid.startsWith('user_anonymous') &&
         !currentUid.startsWith('guest_')
       ) {
-        markConversationReadInFirestore(conversationId, currentUid).catch((err) => {
+        markConversationReadInFirestore(conversationId, currentUid).catch((err: unknown) => {
           console.warn('[dataStore] markConversationReadInFirestore warning:', err);
         });
       }

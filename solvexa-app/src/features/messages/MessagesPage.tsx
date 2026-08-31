@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { dataStore } from '../../services/store/dataStore';
 import { useAuth } from '../auth/AuthContext';
 import type { Conversation, Message } from '../../types/message.types';
@@ -8,6 +8,13 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { MediaViewer, type MediaViewerItem } from '../../components/common/MediaViewer';
 import { Modal } from '../../components/common/Modal';
 import { uploadMediaFile } from '../../services/storage/mediaUpload';
+import {
+  subscribeToUserConversations,
+  subscribeToConversationMessages,
+  sendMessageInFirestore,
+  deleteMessageForMeInFirestore,
+  deleteMessageForEveryoneInFirestore,
+} from '../../services/firestore/nexusService';
 
 export default function MessagesPage() {
   const { solvexaUser, dataMode } = useAuth();
@@ -37,12 +44,34 @@ export default function MessagesPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
-  const location = useLocation();
   const navigate = useNavigate();
+
+  // Sync active conversation when URL query changes
+  useEffect(() => {
+    if (queryConvId) {
+      setActiveConversationId(queryConvId);
+    }
+  }, [queryConvId]);
 
   // Load and subscribe to conversations
   useEffect(() => {
-    const syncConvs = () => {
+    const currentUid = solvexaUser?.uid;
+    let unsubFirestore: (() => void) | null = null;
+
+    if (
+      dataMode === 'REAL' &&
+      currentUid &&
+      !currentUid.startsWith('user_anonymous') &&
+      !currentUid.startsWith('guest_')
+    ) {
+      unsubFirestore = subscribeToUserConversations(currentUid, (firestoreConvs) => {
+        firestoreConvs.forEach((c) => dataStore.addOrUpdateConversation(c));
+        setConversations(firestoreConvs);
+        if (!activeConversationId && firestoreConvs.length > 0 && window.innerWidth >= 768) {
+          setActiveConversationId(firestoreConvs[0].conversationId);
+        }
+      });
+    } else {
       const convList = dataStore.getConversations();
       setConversations(convList);
 
@@ -60,29 +89,58 @@ export default function MessagesPage() {
       } else if (!activeConversationId && convList.length > 0 && window.innerWidth >= 768) {
         setActiveConversationId(convList[0].conversationId);
       }
-    };
+    }
 
-    syncConvs();
-    const unsub = dataStore.subscribe(syncConvs);
-    return () => unsub();
-  }, [targetUserId]);
+    const unsubStore = dataStore.subscribe(() => {
+      if (dataMode === 'DEMO') {
+        setConversations(dataStore.getConversations());
+      }
+    });
+
+    return () => {
+      if (unsubFirestore) unsubFirestore();
+      unsubStore();
+    };
+  }, [targetUserId, solvexaUser?.uid, dataMode]);
 
   // Load messages for the active conversation
   useEffect(() => {
-    if (activeConversationId) {
-      dataStore.markConversationAsRead(activeConversationId);
+    if (!activeConversationId) {
+      setMessages([]);
+      return;
+    }
+
+    dataStore.markConversationAsRead(activeConversationId);
+    const currentUid = solvexaUser?.uid;
+    let unsubMessages: (() => void) | null = null;
+
+    if (
+      dataMode === 'REAL' &&
+      currentUid &&
+      !currentUid.startsWith('user_anonymous') &&
+      !currentUid.startsWith('guest_')
+    ) {
+      unsubMessages = subscribeToConversationMessages(activeConversationId, (firestoreMsgs) => {
+        setMessages(firestoreMsgs);
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        }, 50);
+      });
+    } else {
       const msgs = dataStore.getMessages(activeConversationId);
       setMessages(msgs);
-
-      // Auto-focus input
-      setTimeout(() => {
-        textInputRef.current?.focus();
-        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-      }, 100);
-    } else {
-      setMessages([]);
     }
-  }, [activeConversationId, location.search]);
+
+    // Auto-focus input
+    setTimeout(() => {
+      textInputRef.current?.focus();
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    }, 100);
+
+    return () => {
+      if (unsubMessages) unsubMessages();
+    };
+  }, [activeConversationId, solvexaUser?.uid, dataMode]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -95,20 +153,38 @@ export default function MessagesPage() {
     (p) => p.uid !== currentUid
   );
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if ((!messageInput.trim() && !attachedFile) || !activeConversationId) return;
 
     const text = messageInput.trim();
     const mediaPayload = attachedFile ? { url: attachedFile.url, type: attachedFile.type } : undefined;
 
+    setMessageInput('');
+    setAttachedFile(null);
+
+    // Optimistically store in dataStore
     dataStore.sendMessage(activeConversationId, text, {
       type: attachedFile ? 'media' : 'text',
       media: mediaPayload,
     });
 
-    setMessageInput('');
-    setAttachedFile(null);
+    // Write to Firestore in REAL mode
+    if (
+      dataMode === 'REAL' &&
+      currentUid &&
+      !currentUid.startsWith('user_anonymous') &&
+      !currentUid.startsWith('guest_')
+    ) {
+      try {
+        await sendMessageInFirestore(activeConversationId, text, {
+          type: attachedFile ? 'media' : 'text',
+          media: mediaPayload,
+        });
+      } catch (err) {
+        console.error('[MessagesPage] Error sending message in Firestore:', err);
+      }
+    }
 
     // Simulate mock auto-reply for DEMO mode only
     if (dataMode === 'DEMO' && activeConversationId && otherParticipant) {
@@ -142,25 +218,39 @@ export default function MessagesPage() {
     }
   };
 
-  const handleDeleteForMe = () => {
-    if (
-      activeConversationId &&
-      selectedMessageForDelete &&
-      selectedMessageForDelete.senderId === currentUid
-    ) {
-      dataStore.deleteMessageForMe(activeConversationId, selectedMessageForDelete.messageId);
+  const handleDeleteForMe = async () => {
+    if (activeConversationId && selectedMessageForDelete) {
+      const msgId = selectedMessageForDelete.messageId;
+      dataStore.deleteMessageForMe(activeConversationId, msgId);
       setSelectedMessageForDelete(null);
+      if (
+        dataMode === 'REAL' &&
+        currentUid &&
+        !currentUid.startsWith('user_anonymous') &&
+        !currentUid.startsWith('guest_')
+      ) {
+        await deleteMessageForMeInFirestore(activeConversationId, msgId);
+      }
     }
   };
 
-  const handleDeleteForEveryone = () => {
+  const handleDeleteForEveryone = async () => {
     if (
       activeConversationId &&
       selectedMessageForDelete &&
       selectedMessageForDelete.senderId === currentUid
     ) {
-      dataStore.deleteMessageForEveryone(activeConversationId, selectedMessageForDelete.messageId);
+      const msgId = selectedMessageForDelete.messageId;
+      dataStore.deleteMessageForEveryone(activeConversationId, msgId);
       setSelectedMessageForDelete(null);
+      if (
+        dataMode === 'REAL' &&
+        currentUid &&
+        !currentUid.startsWith('user_anonymous') &&
+        !currentUid.startsWith('guest_')
+      ) {
+        await deleteMessageForEveryoneInFirestore(activeConversationId, msgId);
+      }
     }
   };
 

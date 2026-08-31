@@ -1,15 +1,13 @@
 import {
   collection,
   doc,
-  getDocs,
+  getDoc,
   setDoc,
   updateDoc,
   query,
   where,
   orderBy,
   onSnapshot,
-  arrayUnion,
-  serverTimestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
@@ -20,7 +18,16 @@ import { sanitizeForFirestore } from '../../lib/firestoreUtils';
 const CONVERSATIONS_COLLECTION = 'conversations';
 
 /**
- * Subscribes to real-time conversations for the current authenticated user
+ * Generates a deterministic direct conversation ID from two user UIDs
+ */
+export function getDirectConversationId(uid1: string, uid2: string): string {
+  const sorted = [uid1, uid2].sort();
+  return `direct_${sorted[0]}_${sorted[1]}`;
+}
+
+/**
+ * Subscribes to real-time conversations for the current authenticated user.
+ * Avoids Firestore multi-field composite index errors by sorting in-memory.
  */
 export function subscribeToUserConversations(
   uid: string,
@@ -29,8 +36,7 @@ export function subscribeToUserConversations(
   try {
     const q = query(
       collection(db, CONVERSATIONS_COLLECTION),
-      where('participants', 'array-contains', uid),
-      orderBy('updatedAt', 'desc')
+      where('participants', 'array-contains', uid)
     );
 
     return onSnapshot(
@@ -40,6 +46,9 @@ export function subscribeToUserConversations(
         snapshot.forEach((docSnap) => {
           convs.push(docSnap.data() as Conversation);
         });
+        convs.sort(
+          (a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
+        );
         onUpdate(convs);
       },
       (error) => {
@@ -83,7 +92,7 @@ export function subscribeToConversationMessages(
 }
 
 /**
- * Creates or gets existing conversation
+ * Creates or gets existing conversation with deterministic conversation ID
  */
 export async function getOrCreateFirestoreConversation(
   targetUser: {
@@ -99,28 +108,16 @@ export async function getOrCreateFirestoreConversation(
   }
 
   const currentUid = currentUser.uid;
+  const conversationId = getDirectConversationId(currentUid, targetUser.uid);
 
   try {
-    // Check if conversation exists
-    const q = query(
-      collection(db, CONVERSATIONS_COLLECTION),
-      where('participants', 'array-contains', currentUid)
-    );
-    const snapshot = await getDocs(q);
-    let existing: Conversation | null = null;
+    const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
+    const snap = await getDoc(convRef);
 
-    snapshot.forEach((docSnap) => {
-      const data = docSnap.data() as Conversation;
-      if (data.type === 'direct' && data.participants.includes(targetUser.uid)) {
-        existing = data;
-      }
-    });
-
-    if (existing) {
-      return existing;
+    if (snap.exists()) {
+      return snap.data() as Conversation;
     }
 
-    const conversationId = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
 
     const newConv: Conversation = {
@@ -131,7 +128,11 @@ export async function getOrCreateFirestoreConversation(
         {
           uid: currentUid,
           displayName: currentUser.displayName || 'Solvexa Pioneer',
-          username: (currentUser.displayName || currentUser.email?.split('@')[0] || `user_${currentUid.slice(0, 5)}`)
+          username: (
+            currentUser.displayName ||
+            currentUser.email?.split('@')[0] ||
+            `user_${currentUid.slice(0, 5)}`
+          )
             .toLowerCase()
             .replace(/[^a-z0-9_]/g, '_'),
           photoURL: currentUser.photoURL || null,
@@ -152,9 +153,7 @@ export async function getOrCreateFirestoreConversation(
       createdBy: currentUid,
     };
 
-    const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
     await setDoc(convRef, sanitizeForFirestore(newConv));
-
     return newConv;
   } catch (error: unknown) {
     console.error('[nexusService] createConversation error:', error);
@@ -164,7 +163,7 @@ export async function getOrCreateFirestoreConversation(
 }
 
 /**
- * Sends a message in Firestore
+ * Sends a message in Firestore, atomically creating/updating parent conversation
  */
 export async function sendMessageInFirestore(
   conversationId: string,
@@ -209,7 +208,7 @@ export async function sendMessageInFirestore(
 
     await Promise.all([
       setDoc(msgRef, sanitizedMsg),
-      updateDoc(convRef, sanitizedConvUpdate),
+      setDoc(convRef, sanitizedConvUpdate, { merge: true }),
     ]);
 
     return newMsg;
@@ -221,8 +220,7 @@ export async function sendMessageInFirestore(
 }
 
 /**
- * WhatsApp-Style: Delete message for ME
- * Appends current user UID to deletedFor array without affecting other participants
+ * Soft deletes message for a specific user
  */
 export async function deleteMessageForMeInFirestore(
   conversationId: string,
@@ -233,20 +231,22 @@ export async function deleteMessageForMeInFirestore(
 
   try {
     const msgRef = doc(db, CONVERSATIONS_COLLECTION, conversationId, 'messages', messageId);
-    await updateDoc(msgRef, {
-      deletedFor: arrayUnion(currentUser.uid),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (error: unknown) {
-    console.error('[nexusService] deleteMessageForMe error:', error);
-    const firestoreError = error as { code?: string; message?: string };
-    throw new Error(mapFirestoreError(firestoreError));
+    const snap = await getDoc(msgRef);
+    if (!snap.exists()) return;
+
+    const data = snap.data() as Message;
+    const deletedFor = data.deletedFor || [];
+    if (!deletedFor.includes(currentUser.uid)) {
+      deletedFor.push(currentUser.uid);
+      await updateDoc(msgRef, { deletedFor });
+    }
+  } catch (err) {
+    console.warn('[nexusService] deleteMessageForMe warning:', err);
   }
 }
 
 /**
- * WhatsApp-Style: Delete message for EVERYONE
- * Sender replaces message content with "This message was deleted" and sets isDeletedForEveryone: true
+ * Deletes message for everyone (replaces content with deleted placeholder)
  */
 export async function deleteMessageForEveryoneInFirestore(
   conversationId: string,
@@ -257,37 +257,40 @@ export async function deleteMessageForEveryoneInFirestore(
 
   try {
     const msgRef = doc(db, CONVERSATIONS_COLLECTION, conversationId, 'messages', messageId);
+    const snap = await getDoc(msgRef);
+    if (!snap.exists()) return;
+
+    const data = snap.data() as Message;
+    if (data.senderId !== currentUser.uid) {
+      throw new Error('You can only delete your own transmissions for everyone.');
+    }
+
     await updateDoc(msgRef, {
-      content: 'This message was deleted',
+      content: 'This message was deleted.',
       isDeletedForEveryone: true,
       media: null,
       sharedContent: null,
-      updatedAt: serverTimestamp(),
     });
-  } catch (error: unknown) {
-    console.error('[nexusService] deleteMessageForEveryone error:', error);
-    const firestoreError = error as { code?: string; message?: string };
-    throw new Error(mapFirestoreError(firestoreError));
+  } catch (err) {
+    console.warn('[nexusService] deleteMessageForEveryone warning:', err);
   }
 }
 
 /**
- * Marks conversation unread count as 0 for the specified user in Firestore
+ * Marks conversation unread count as read for a specific user in Firestore
  */
 export async function markConversationReadInFirestore(
   conversationId: string,
   uid: string
 ): Promise<void> {
-  const currentUser = auth.currentUser;
-  if (!currentUser || currentUser.uid !== uid) return;
-
+  if (!conversationId || !uid) return;
   try {
     const convRef = doc(db, CONVERSATIONS_COLLECTION, conversationId);
     await updateDoc(convRef, {
       [`unreadCounts.${uid}`]: 0,
-      updatedAt: serverTimestamp(),
+      updatedAt: new Date().toISOString(),
     });
-  } catch (error: unknown) {
-    console.warn('[nexusService] markConversationReadInFirestore warning:', error);
+  } catch (err) {
+    console.warn('[nexusService] markConversationReadInFirestore warning:', err);
   }
 }

@@ -12,9 +12,10 @@ import { Modal } from '../../components/common/Modal';
 import { MediaViewer, type MediaViewerItem } from '../../components/common/MediaViewer';
 import { uploadMediaFile, getSignalThumbnail } from '../../services/storage/mediaUpload';
 import { updateUserProfile, getUserProfile, getUserByUsername } from '../../services/auth/profileService';
+import { followUser, unfollowUser, isUserFollowing } from '../../services/firestore/followService';
+import { getOrCreateFirestoreConversation } from '../../services/firestore/nexusService';
 import { EmptyState } from '../../components/common/EmptyState';
 import { formatRelativeTime } from '../../lib/firestoreUtils';
-
 
 export default function ProfilePage() {
   const { username } = useParams<{ username?: string }>();
@@ -27,6 +28,8 @@ export default function ProfilePage() {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  const [isFollowPending, setIsFollowPending] = useState(false);
+  const [isOpeningChat, setIsOpeningChat] = useState(false);
 
   // Modals for Followers / Following lists
   const [connectionModalType, setConnectionModalType] = useState<'followers' | 'following' | null>(null);
@@ -86,7 +89,8 @@ export default function ProfilePage() {
   useEffect(() => {
     let isMounted = true;
 
-    const syncProfile = () => {
+    const loadProfileData = async () => {
+      // 1. Own profile flow
       if (isOwnProfile) {
         const me = solvexaUser || dataStore.getCurrentUser();
         if (me) {
@@ -102,55 +106,81 @@ export default function ProfilePage() {
             me.identityCards?.map((c) => c.label) || ['AI & ML', 'Spatial UI', 'Quantum Mesh', 'Product Design']
           );
         }
-      } else {
-        if (targetIdentifier) {
-          setIsLoadingProfile(true);
-          setUser(null);
+        setIsLoadingProfile(false);
+        return;
+      }
 
-          // Try loading by UID first, then by normalized username
-          getUserProfile(targetIdentifier)
-            .then((docUser) => {
-              if (!isMounted) return null;
-              if (docUser) {
-                dataStore.cacheUser(docUser);
-                setUser(docUser);
-                setIsLoadingProfile(false);
-                return docUser;
-              } else {
-                return getUserByUsername(targetIdentifier);
-              }
-            })
-            .then((byUsername) => {
-              if (!isMounted) return;
-              if (byUsername) {
-                dataStore.cacheUser(byUsername);
-                setUser(byUsername);
-              } else if (dataMode === 'DEMO') {
-                const alt = dataStore.getUser(targetIdentifier);
-                setUser(alt || null);
-              } else {
-                setUser(null);
-              }
-            })
-            .catch((err) => {
-              if (!isMounted) return;
-              console.warn('[ProfilePage] Failed to fetch Firestore user:', err);
-              setUser(null);
-            })
-            .finally(() => {
-              if (isMounted) setIsLoadingProfile(false);
-            });
+      // 2. Demo Mode profile lookup (instant, zero network calls, completely isolated)
+      if (dataMode === 'DEMO') {
+        const demoUser = dataStore.getUser(targetIdentifier);
+        if (demoUser) {
+          setUser(demoUser);
+        } else {
+          setUser(null);
+        }
+        setIsLoadingProfile(false);
+        return;
+      }
+
+      // 3. Real Mode profile loading
+      if (targetIdentifier) {
+        // Fast optimistic cache hit if already cached in memory
+        const cached = dataStore.getUser(targetIdentifier);
+        if (cached) {
+          setUser(cached);
+        } else {
+          setIsLoadingProfile(true);
+        }
+
+        try {
+          // Fetch from Firestore
+          let docUser = await getUserProfile(targetIdentifier);
+          if (!docUser) {
+            docUser = await getUserByUsername(targetIdentifier);
+          }
+
+          if (!isMounted) return;
+
+          if (docUser) {
+            // Check real follow relationship
+            const currentUid = solvexaUser?.uid || firebaseUser?.uid;
+            let isFollowing = false;
+            if (currentUid && currentUid !== docUser.uid) {
+              isFollowing = await isUserFollowing(currentUid, docUser.uid);
+            }
+
+            const completeUser = { ...docUser, isFollowing };
+            dataStore.cacheUser(completeUser);
+            setUser(completeUser);
+          } else {
+            setUser(null);
+          }
+        } catch (err) {
+          if (!isMounted) return;
+          console.warn('[ProfilePage] Error fetching user profile:', err);
+          setUser(null);
+        } finally {
+          if (isMounted) setIsLoadingProfile(false);
         }
       }
     };
 
-    syncProfile();
-    const unsub = dataStore.subscribe(syncProfile);
+    loadProfileData();
+
+    // Subscribe to store updates without resetting non-owned profile state
+    const unsub = dataStore.subscribe(() => {
+      if (!isMounted) return;
+      if (isOwnProfile) {
+        const me = solvexaUser || dataStore.getCurrentUser();
+        if (me) setUser(me);
+      }
+    });
+
     return () => {
       isMounted = false;
       unsub();
     };
-  }, [targetIdentifier, isOwnProfile, solvexaUser, dataMode]);
+  }, [targetIdentifier, isOwnProfile, solvexaUser?.uid, dataMode]);
 
 
   if (isLoadingProfile) {
@@ -329,20 +359,88 @@ export default function ProfilePage() {
     setTimeout(() => setShareToast(null), 2500);
   };
 
-  const handleFollowToggle = () => {
-    if (!user) return;
-    dataStore.toggleFollowUser(user.uid);
+  const handleFollowToggle = async () => {
+    if (!user || isFollowPending || isOwnProfile) return;
+
+    const currentUid = solvexaUser?.uid || firebaseUser?.uid || 'user_anonymous';
+    const newFollowing = !user.isFollowing;
+    const countDiff = newFollowing ? 1 : -1;
+    const prevFollowing = user.isFollowing;
+    const prevCount = user.followerCount || 0;
+
+    setIsFollowPending(true);
+
+    // Optimistic UI update
+    setUser({
+      ...user,
+      isFollowing: newFollowing,
+      followerCount: Math.max(0, prevCount + countDiff),
+    });
+
+    try {
+      if (
+        dataMode === 'REAL' &&
+        currentUid &&
+        !currentUid.startsWith('user_anonymous') &&
+        !currentUid.startsWith('guest_')
+      ) {
+        if (newFollowing) {
+          await followUser(currentUid, user.uid);
+        } else {
+          await unfollowUser(currentUid, user.uid);
+        }
+      } else {
+        dataStore.toggleFollowUser(user.uid, newFollowing);
+      }
+    } catch (err: unknown) {
+      console.error('[ProfilePage] Follow toggle error:', err);
+      // Rollback optimistic state
+      setUser({
+        ...user,
+        isFollowing: prevFollowing,
+        followerCount: prevCount,
+      });
+      setShareToast('Unable to update follow status. Please try again.');
+      setTimeout(() => setShareToast(null), 3000);
+    } finally {
+      setIsFollowPending(false);
+    }
   };
 
-  const handleDirectMessage = () => {
-    if (!user) return;
-    const conv = dataStore.getOrCreateConversation({
-      uid: user.uid,
-      displayName: user.displayName,
-      username: user.username,
-      photoURL: user.photoURL,
-    });
-    navigate(`/messages?id=${conv.conversationId}`);
+  const handleDirectMessage = async () => {
+    if (!user || isOpeningChat) return;
+
+    try {
+      setIsOpeningChat(true);
+
+      const targetData = {
+        uid: user.uid,
+        displayName: user.displayName,
+        username: user.username,
+        photoURL: user.photoURL,
+      };
+
+      const currentUid = solvexaUser?.uid || firebaseUser?.uid || 'user_anonymous';
+
+      if (
+        dataMode === 'REAL' &&
+        currentUid &&
+        !currentUid.startsWith('user_anonymous') &&
+        !currentUid.startsWith('guest_')
+      ) {
+        const conv = await getOrCreateFirestoreConversation(targetData);
+        dataStore.addOrUpdateConversation(conv);
+        navigate(`/messages?id=${conv.conversationId}`);
+      } else {
+        const conv = dataStore.getOrCreateConversation(targetData);
+        navigate(`/messages?id=${conv.conversationId}`);
+      }
+    } catch (err: unknown) {
+      console.error('[ProfilePage] Direct message failed:', err);
+      setIsOpeningChat(false);
+      setShareToast('Unable to open conversation. Please try again.');
+      setTimeout(() => setShareToast(null), 3000);
+    }
   };
 
   // --- POST EDIT/DELETE HANDLERS FOR MY ORBIT ---
@@ -573,21 +671,47 @@ export default function ProfilePage() {
                 <>
                   <button
                     onClick={handleFollowToggle}
-                    className={`px-5 py-2 rounded-xl text-xs font-bold transition-all shadow-lg ${
+                    disabled={isFollowPending}
+                    className={`min-h-[44px] px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-1.5 touch-manipulation disabled:opacity-60 ${
                       user.isFollowing
                         ? 'bg-white/10 text-white hover:bg-error/20 hover:text-error border border-white/15'
                         : 'bg-gradient-to-r from-[#7a00ff] to-[#0066ff] text-white hover:opacity-90 shadow-purple-900/40'
                     }`}
                   >
-                    {user.isFollowing ? 'Resonating (Following)' : 'Resonate (Follow)'}
+                    {isFollowPending ? (
+                      <>
+                        <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+                        <span>Updating...</span>
+                      </>
+                    ) : user.isFollowing ? (
+                      <>
+                        <span className="material-symbols-outlined text-sm">check</span>
+                        <span>Following</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">person_add</span>
+                        <span>Follow</span>
+                      </>
+                    )}
                   </button>
 
                   <button
                     onClick={handleDirectMessage}
-                    className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-white/10 hover:bg-white/20 border border-white/15 transition-all flex items-center gap-1.5"
+                    disabled={isOpeningChat}
+                    className="min-h-[44px] px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-white/10 hover:bg-white/20 border border-white/15 transition-all flex items-center justify-center gap-1.5 touch-manipulation disabled:opacity-60"
                   >
-                    <span className="material-symbols-outlined text-sm">mail</span>
-                    <span>Message</span>
+                    {isOpeningChat ? (
+                      <>
+                        <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+                        <span>Opening...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">mail</span>
+                        <span>Message</span>
+                      </>
+                    )}
                   </button>
                 </>
               )}
