@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
 import { dataStore } from '../../services/store/dataStore';
 import { useAuth } from '../auth/AuthContext';
 import type { Conversation, Message } from '../../types/message.types';
-import { Avatar } from '../../components/common/Avatar';
+import { Avatar, resolveAvatarSrc } from '../../components/common/Avatar';
 import { EmptyState } from '../../components/common/EmptyState';
 import { MediaViewer, type MediaViewerItem } from '../../components/common/MediaViewer';
 import { Modal } from '../../components/common/Modal';
@@ -211,7 +211,7 @@ export default function MessagesPage() {
                   }`}
                 >
                   <Avatar
-                    src={other?.photoURL}
+                    src={resolveAvatarSrc(other)}
                     name={other?.displayName || 'Peer'}
                     size="md"
                     hasStory={false}
@@ -266,7 +266,7 @@ export default function MessagesPage() {
                 </button>
 
                 <Avatar
-                  src={otherParticipant.photoURL}
+                  src={resolveAvatarSrc(otherParticipant)}
                   name={otherParticipant.displayName}
                   size="sm"
                   hasStory

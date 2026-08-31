@@ -29,6 +29,9 @@ export interface SolvexaUser {
   username: string;
   email: string;
   photoURL: string | null;
+  avatarUrl?: string | null;
+  avatar?: string | null;
+  profileImage?: string | null;
   coverPhotoURL: string | null;
   bio: string;
   location: string;

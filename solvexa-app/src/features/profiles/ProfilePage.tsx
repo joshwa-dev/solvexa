@@ -6,7 +6,7 @@ import type { SolvexaUser } from '../../types/user.types';
 import type { Post } from '../../types/post.types';
 import type { SignalVideo } from '../../types/signal.types';
 import type { MomentWithAuthor } from '../../types/moment.types';
-import { Avatar } from '../../components/common/Avatar';
+import { Avatar, resolveAvatarSrc } from '../../components/common/Avatar';
 import { SignalChip } from '../../components/common/SignalChip';
 import { Modal } from '../../components/common/Modal';
 import { MediaViewer, type MediaViewerItem } from '../../components/common/MediaViewer';
@@ -18,7 +18,7 @@ import { formatRelativeTime } from '../../lib/firestoreUtils';
 
 export default function ProfilePage() {
   const { username } = useParams<{ username?: string }>();
-  const { solvexaUser, refreshProfile } = useAuth();
+  const { solvexaUser, firebaseUser, dataMode, refreshProfile } = useAuth();
   const navigate = useNavigate();
 
   const [user, setUser] = useState<SolvexaUser | null>(null);
@@ -96,29 +96,26 @@ export default function ProfilePage() {
           setEditBio(me.bio || '');
           setEditLocation(me.location || '');
           setEditWebsite(me.website || '');
-          setEditAvatarUrl(me.photoURL || '');
-          setEditCoverUrl(me.coverPhotoURL || '');
+          setEditAvatarUrl(resolveAvatarSrc(me, firebaseUser, true) || '');
+          setEditCoverUrl(me.coverPhotoURL || (me as any).coverUrl || '');
           setEditInterests(
             me.identityCards?.map((c) => c.label) || ['AI & ML', 'Spatial UI', 'Quantum Mesh', 'Product Design']
           );
         }
       } else {
-        const found = dataStore.getUsers().find(
-          (u) => u.uid === targetIdentifier || (u.username && u.username.toLowerCase() === targetIdentifier.toLowerCase())
-        );
-        if (found) {
-          setUser(found);
-        }
-
         if (targetIdentifier) {
           setIsLoadingProfile(true);
+          setUser(null);
+
           // Try loading by UID first, then by normalized username
           getUserProfile(targetIdentifier)
             .then((docUser) => {
-              if (!isMounted) return;
+              if (!isMounted) return null;
               if (docUser) {
+                dataStore.cacheUser(docUser);
                 setUser(docUser);
                 setIsLoadingProfile(false);
+                return docUser;
               } else {
                 return getUserByUsername(targetIdentifier);
               }
@@ -126,17 +123,19 @@ export default function ProfilePage() {
             .then((byUsername) => {
               if (!isMounted) return;
               if (byUsername) {
+                dataStore.cacheUser(byUsername);
                 setUser(byUsername);
-              } else if (!found) {
-                // If in DEMO mode, allow mock fallback; in REAL mode, don't fabricate fake users
-                const alt = dataStore.getDataMode() === 'DEMO' ? dataStore.getUser(targetIdentifier) : null;
+              } else if (dataMode === 'DEMO') {
+                const alt = dataStore.getUser(targetIdentifier);
                 setUser(alt || null);
+              } else {
+                setUser(null);
               }
             })
             .catch((err) => {
               if (!isMounted) return;
               console.warn('[ProfilePage] Failed to fetch Firestore user:', err);
-              if (!found) setUser(null);
+              setUser(null);
             })
             .finally(() => {
               if (isMounted) setIsLoadingProfile(false);
@@ -151,7 +150,7 @@ export default function ProfilePage() {
       isMounted = false;
       unsub();
     };
-  }, [targetIdentifier, isOwnProfile, solvexaUser]);
+  }, [targetIdentifier, isOwnProfile, solvexaUser, dataMode]);
 
 
   if (isLoadingProfile) {
@@ -456,6 +455,9 @@ export default function ProfilePage() {
     }
   };
 
+  const displayAvatar = resolveAvatarSrc(user, firebaseUser, isOwnProfile);
+  const displayCover = user?.coverPhotoURL || (user as any)?.coverUrl || (user as any)?.coverImage || null;
+
   return (
     <div className="min-h-screen bg-[#0A0A0B] text-white p-3 sm:p-6 md:p-8 max-w-5xl mx-auto space-y-6 pb-24 select-none">
       {/* Toast Feedback */}
@@ -472,9 +474,9 @@ export default function ProfilePage() {
       <div className="relative rounded-3xl bg-[#141416]/90 border border-white/10 overflow-hidden shadow-2xl">
         {/* 1. Cover Banner (Cosmic Mesh Gradient or Custom Cover Photo) */}
         <div className="relative h-40 sm:h-52 w-full overflow-hidden bg-[#18181b]">
-          {user.coverPhotoURL ? (
+          {displayCover ? (
             <img
-              src={user.coverPhotoURL}
+              src={displayCover}
               alt="Cover banner"
               className="w-full h-full object-cover"
               onError={(e) => {
@@ -517,9 +519,9 @@ export default function ProfilePage() {
             <div className="relative flex-shrink-0 self-center sm:self-start">
               <div
                 onClick={() => {
-                  if (user.photoURL) {
+                  if (displayAvatar) {
                     setLightboxMedia({
-                      url: user.photoURL,
+                      url: displayAvatar,
                       type: 'image',
                       authorName: user.displayName,
                       authorUsername: user.username,
@@ -531,7 +533,7 @@ export default function ProfilePage() {
               >
                 <div className="p-0.5 rounded-full bg-[#141416]">
                   <Avatar
-                    src={user.photoURL}
+                    src={displayAvatar}
                     name={user.displayName}
                     size="2xl"
                     hasStory={userMoments.length > 0}
@@ -809,7 +811,7 @@ export default function ProfilePage() {
                   {/* Post Author Header */}
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <Avatar src={user.photoURL} name={user.displayName} size="md" />
+                      <Avatar src={displayAvatar} name={user.displayName} size="md" />
                       <div>
                         <div className="text-xs font-bold text-white flex items-center gap-1.5">
                           <span>{user.displayName}</span>
@@ -1074,7 +1076,7 @@ export default function ProfilePage() {
               {/* Center Node */}
               <div className="relative z-10 flex flex-col items-center">
                 <div className="p-1 rounded-full bg-gradient-to-tr from-cyan-400 to-purple-600 signal-glow">
-                  <Avatar src={user.photoURL} name={user.displayName} size="lg" />
+                  <Avatar src={displayAvatar} name={user.displayName} size="lg" />
                 </div>
                 <span className="mt-2 text-xs font-bold text-white bg-black/70 px-2.5 py-0.5 rounded-full border border-white/10">
                   You ({user.displayName})
@@ -1088,16 +1090,17 @@ export default function ProfilePage() {
                 const angle = angles[idx % angles.length] * (Math.PI / 180);
                 const x = Math.cos(angle) * radius;
                 const y = Math.sin(angle) * radius;
+                const nodeAvatar = resolveAvatarSrc(node);
 
                 return (
                   <div
                     key={node.uid}
-                    onClick={() => navigate(`/profile/${node.username}`)}
+                    onClick={() => navigate(`/profile/${node.uid || node.username}`)}
                     style={{ transform: `translate(${x}px, ${y}px)` }}
                     className="absolute z-20 flex flex-col items-center cursor-pointer group hover:scale-110 transition-transform"
                   >
                     <div className="p-0.5 rounded-full bg-white/20 group-hover:bg-primary signal-glow">
-                      <Avatar src={node.photoURL} name={node.displayName} size="md" />
+                      <Avatar src={nodeAvatar} name={node.displayName} size="md" />
                     </div>
                     <span className="text-[10px] font-bold text-zinc-300 group-hover:text-primary mt-1 bg-black/80 px-2 py-0.5 rounded-md border border-white/10">
                       {node.displayName.split(' ')[0]}
@@ -1118,36 +1121,39 @@ export default function ProfilePage() {
                   />
                 </div>
               ) : (
-                filteredNodes.map((node) => (
-                  <div
-                    key={node.uid}
-                    className="p-4 rounded-2xl bg-[#141416]/80 border border-white/10 hover:border-primary/40 transition-all flex items-center justify-between gap-3"
-                  >
-                    <div className="flex items-center gap-3 min-w-0" onClick={() => navigate(`/profile/${node.username}`)}>
-                      <Avatar src={node.photoURL} name={node.displayName} size="md" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-white truncate">{node.displayName}</div>
-                        <div className="text-[10px] text-zinc-400 truncate">@{node.username}</div>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        const conv = dataStore.getOrCreateConversation({
-                          uid: node.uid,
-                          displayName: node.displayName,
-                          username: node.username,
-                          photoURL: node.photoURL,
-                        });
-                        navigate(`/messages?id=${conv.conversationId}`);
-                      }}
-                      className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white border border-white/10 text-xs"
-                      title="Direct Message"
+                filteredNodes.map((node) => {
+                  const nodeAvatar = resolveAvatarSrc(node);
+                  return (
+                    <div
+                      key={node.uid}
+                      className="p-4 rounded-2xl bg-[#141416]/80 border border-white/10 hover:border-primary/40 transition-all flex items-center justify-between gap-3"
                     >
-                      <span className="material-symbols-outlined text-sm">mail</span>
-                    </button>
-                  </div>
-                ))
+                      <div className="flex items-center gap-3 min-w-0" onClick={() => navigate(`/profile/${node.uid || node.username}`)}>
+                        <Avatar src={nodeAvatar} name={node.displayName} size="md" />
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">{node.displayName}</div>
+                          <div className="text-[10px] text-zinc-400 truncate">@{node.username}</div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          const conv = dataStore.getOrCreateConversation({
+                            uid: node.uid,
+                            displayName: node.displayName,
+                            username: node.username,
+                            photoURL: nodeAvatar,
+                          });
+                          navigate(`/messages?id=${conv.conversationId}`);
+                        }}
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white border border-white/10 text-xs"
+                        title="Direct Message"
+                      >
+                        <span className="material-symbols-outlined text-sm">mail</span>
+                      </button>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
@@ -1393,10 +1399,10 @@ export default function ProfilePage() {
                   className="flex items-center gap-3 cursor-pointer min-w-0"
                   onClick={() => {
                     setConnectionModalType(null);
-                    navigate(`/profile/${conn.username}`);
+                    navigate(`/profile/${conn.uid || conn.username}`);
                   }}
                 >
-                  <Avatar src={conn.photoURL} name={conn.displayName} size="md" />
+                  <Avatar src={resolveAvatarSrc(conn)} name={conn.displayName} size="md" />
                   <div className="min-w-0">
                     <div className="text-xs font-bold text-white truncate">{conn.displayName}</div>
                     <div className="text-[10px] text-zinc-400 truncate">@{conn.username}</div>

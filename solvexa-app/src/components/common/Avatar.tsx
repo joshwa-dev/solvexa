@@ -14,29 +14,32 @@ export interface AvatarProps {
 
 /**
  * Resolves avatar source following priority order:
- * 1. Firebase user's photoURL if available
- * 2. Firestore user's photoURL / avatarUrl / profileImage / avatar field
+ * 1. User's avatar / avatarUrl / avatarURL / profileImage / photoURL field
+ * 2. If isCurrentUser is true, fallback to firebaseUser?.photoURL
  * 3. Fallback to null (which triggers initials avatar)
  */
 export function resolveAvatarSrc(
-  user?: Partial<SolvexaUser> | { photoURL?: string | null; avatarUrl?: string | null; profileImage?: string | null; avatar?: string | null } | null,
-  firebaseUser?: { photoURL?: string | null } | null
+  user?: Partial<SolvexaUser> | { photoURL?: string | null; avatarUrl?: string | null; avatarURL?: string | null; profileImage?: string | null; avatar?: string | null } | null,
+  firebaseUser?: { photoURL?: string | null } | null,
+  isCurrentUser: boolean = false
 ): string | null {
-  if (firebaseUser?.photoURL && typeof firebaseUser.photoURL === 'string' && firebaseUser.photoURL.trim()) {
-    const val = firebaseUser.photoURL.trim();
-    if (val !== 'null' && val !== 'undefined') return val;
-  }
-
   if (user) {
     const candidate =
-      user.photoURL ||
+      (user as any).avatar ||
       (user as any).avatarUrl ||
+      (user as any).avatarURL ||
       (user as any).profileImage ||
-      (user as any).avatar;
+      user.photoURL;
     if (candidate && typeof candidate === 'string' && candidate.trim()) {
       const val = candidate.trim();
       if (val !== 'null' && val !== 'undefined') return val;
     }
+  }
+
+  // ONLY fall back to firebaseUser if this is explicitly the current logged-in user
+  if (isCurrentUser && firebaseUser?.photoURL && typeof firebaseUser.photoURL === 'string' && firebaseUser.photoURL.trim()) {
+    const val = firebaseUser.photoURL.trim();
+    if (val !== 'null' && val !== 'undefined') return val;
   }
 
   return null;

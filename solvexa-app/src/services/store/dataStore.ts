@@ -388,6 +388,18 @@ class DataStore {
     return Array.from(userMap.values());
   }
 
+  public cacheUser(user: SolvexaUser): void {
+    if (!user || !user.uid) return;
+    const existingIndex = this.users.findIndex((u) => u.uid === user.uid);
+    if (existingIndex >= 0) {
+      this.users[existingIndex] = { ...this.users[existingIndex], ...user };
+    } else {
+      this.users.push(user);
+    }
+    setStored(STORAGE_KEYS.USERS, this.users);
+    this.notify();
+  }
+
   public getUser(uid: string): SolvexaUser | undefined {
     if (!uid) return undefined;
     if (this.currentUser && (this.currentUser.uid === uid || this.currentUser.username?.toLowerCase() === uid.toLowerCase())) {

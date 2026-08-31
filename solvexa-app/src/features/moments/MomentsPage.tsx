@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { dataStore } from '../../services/store/dataStore';
 import { useAuth } from '../auth/AuthContext';
 import type { MomentWithAuthor } from '../../types/moment.types';
-import { Avatar } from '../../components/common/Avatar';
+import { Avatar, resolveAvatarSrc } from '../../components/common/Avatar';
 import { Modal } from '../../components/common/Modal';
 import { EmptyState } from '../../components/common/EmptyState';
 import { uploadMediaFile } from '../../services/storage/mediaUpload';
@@ -425,7 +425,7 @@ export default function MomentsPage() {
               }}
               className="flex items-center gap-2.5 cursor-pointer group"
             >
-              <Avatar src={currentMoment.author.photoURL} name={currentMoment.author.displayName} size="sm" />
+              <Avatar src={resolveAvatarSrc(currentMoment.author)} name={currentMoment.author.displayName} size="sm" />
               <div className="min-w-0">
                 <div className="text-xs font-bold text-white group-hover:text-primary transition-colors truncate max-w-[170px]">
                   {currentMoment.author.displayName}
@@ -688,7 +688,7 @@ export default function MomentsPage() {
               {dataStore.getUsers().slice(0, 3).map((u) => (
                 <div key={u.uid} className="flex items-center justify-between p-2 rounded-xl bg-white/[0.03] border border-white/5">
                   <div className="flex items-center gap-2.5">
-                    <Avatar src={u.photoURL} name={u.displayName} size="sm" />
+                    <Avatar src={resolveAvatarSrc(u)} name={u.displayName} size="sm" />
                     <div>
                       <span className="text-xs font-bold text-white block">{u.displayName}</span>
                       <span className="text-[10px] text-zinc-400">@{u.username}</span>
