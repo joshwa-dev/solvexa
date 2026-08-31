@@ -66,12 +66,12 @@ export default function OnboardingPage() {
   const prevStep = () => setStep((s) => Math.max(1, s - 1));
 
   return (
-    <div className="min-h-screen bg-[#0A0A0B] flex items-center justify-center p-6 relative overflow-hidden">
+    <div className="min-h-[100dvh] w-full bg-[#0A0A0B] flex flex-col justify-center items-center px-4 py-8 sm:px-6 relative overflow-y-auto overscroll-y-contain">
       {/* Background Orbs */}
-      <div className="absolute top-10 left-10 w-96 h-96 bg-purple-600/15 rounded-full blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-10 right-10 w-96 h-96 bg-cyan-600/15 rounded-full blur-[130px] pointer-events-none" />
+      <div className="absolute top-10 left-10 w-80 sm:w-96 h-80 sm:h-96 bg-purple-600/15 rounded-full blur-[100px] sm:blur-[130px] pointer-events-none" />
+      <div className="absolute bottom-10 right-10 w-80 sm:w-96 h-80 sm:h-96 bg-cyan-600/15 rounded-full blur-[100px] sm:blur-[130px] pointer-events-none" />
 
-      <div className="w-full max-w-xl bg-[#141416]/95 border border-white/10 rounded-2xl p-8 shadow-2xl backdrop-blur-2xl relative z-10">
+      <div className="w-full max-w-xl bg-[#141416]/95 border border-white/10 rounded-2xl sm:rounded-3xl p-5 sm:p-8 shadow-2xl backdrop-blur-2xl relative z-10 my-auto">
         {/* Progress header */}
         <div className="flex items-center justify-between mb-8 pb-4 border-b border-white/10">
           <div className="flex items-center gap-3">

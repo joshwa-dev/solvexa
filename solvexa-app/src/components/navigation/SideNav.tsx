@@ -31,7 +31,7 @@ export function SideNav() {
     try {
       setSigningOut(true);
       await signOut();
-      navigate('/');
+      navigate('/login');
     } catch {
       setSigningOut(false);
     }

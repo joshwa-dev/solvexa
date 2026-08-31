@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { dataStore } from '../../services/store/dataStore';
-import { signOutUser, changeUserPassword } from '../../services/auth/authService';
+import { changeUserPassword } from '../../services/auth/authService';
 import { updateUserProfile } from '../../services/auth/profileService';
 import { getUserActivityStats, type ActivityStats } from '../../services/firestore/activityService';
 import { Modal } from '../../components/common/Modal';
@@ -15,7 +15,7 @@ export default function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as SettingsTab) || 'account';
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
-  const { solvexaUser, firebaseUser, isGuest, refreshProfile, signOut } = useAuth();
+  const { solvexaUser, firebaseUser, refreshProfile, signOut } = useAuth();
   const navigate = useNavigate();
 
   const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
@@ -234,24 +234,16 @@ export default function SettingsPage() {
     if (deleteConfirmText !== 'DELETE') return;
     try {
       setIsDeletingAccount(true);
-      if (isGuest) {
-        signOut();
-      } else {
-        await signOutUser();
-      }
-      navigate('/');
+      await signOut();
+      navigate('/login');
     } catch {
       setIsDeletingAccount(false);
     }
   };
 
   const handleSignOut = async () => {
-    if (isGuest) {
-      signOut();
-    } else {
-      await signOutUser();
-    }
-    navigate('/');
+    await signOut();
+    navigate('/login');
   };
 
   const isGoogleUser = firebaseUser?.providerData?.some((p) => p.providerId === 'google.com');

@@ -165,7 +165,7 @@ export default function MessagesPage() {
   };
 
   return (
-    <div className="h-[calc(100vh-4rem)] md:h-screen w-full flex bg-[#0A0A0B] text-white overflow-hidden select-none">
+    <div className="h-[calc(100dvh-4rem-env(safe-area-inset-bottom))] md:h-screen w-full flex bg-[#0A0A0B] text-white overflow-hidden select-none">
       {/* 1. Left Panel: Conversations List */}
       <div
         className={`w-full md:w-80 flex-shrink-0 border-r border-white/10 flex flex-col bg-[#141416]/90 backdrop-blur-xl ${
@@ -403,7 +403,7 @@ export default function MessagesPage() {
             </div>
 
             {/* Input Bar */}
-            <div className="p-3 sm:p-4 border-t border-white/10 bg-[#141416]/95 backdrop-blur-xl flex-shrink-0 space-y-2">
+            <div className="p-3 sm:p-4 border-t border-white/10 bg-[#141416]/95 backdrop-blur-xl flex-shrink-0 space-y-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
               {/* Attachment Preview Chip */}
               {attachedFile && (
                 <div className="flex items-center gap-2 p-2 rounded-xl bg-white/5 border border-white/10 w-fit text-xs text-white">

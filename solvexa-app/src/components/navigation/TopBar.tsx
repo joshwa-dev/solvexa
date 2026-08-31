@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../features/auth/AuthContext';
-import { signOutUser } from '../../services/auth/authService';
 import { dataStore } from '../../services/store/dataStore';
 import { Avatar, resolveAvatarSrc } from '../common/Avatar';
 
 export function TopBar() {
-  const { solvexaUser, firebaseUser, isGuest, dataMode, signOut, exitDemoMode } = useAuth();
+  const { solvexaUser, firebaseUser, dataMode, signOut, exitDemoMode } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -39,12 +38,8 @@ export function TopBar() {
     try {
       setSigningOut(true);
       setDropdownOpen(false);
-      if (isGuest) {
-        signOut();
-      } else {
-        await signOutUser();
-      }
-      navigate('/');
+      await signOut();
+      navigate('/login');
     } catch {
       setSigningOut(false);
     }

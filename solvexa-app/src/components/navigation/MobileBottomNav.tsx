@@ -24,7 +24,7 @@ export function MobileBottomNav() {
 
   return (
     <nav
-      className="md:hidden fixed bottom-0 left-0 right-0 z-50 h-16 flex items-center justify-around px-2 border-t"
+      className="md:hidden fixed bottom-0 left-0 right-0 z-50 flex items-center justify-around px-2 border-t pb-[env(safe-area-inset-bottom)] h-[calc(4rem+env(safe-area-inset-bottom))]"
       style={{
         backgroundColor: 'rgba(19,19,20,0.95)',
         backdropFilter: 'blur(20px)',
@@ -38,7 +38,8 @@ export function MobileBottomNav() {
             <NavLink
               key={item.path}
               to={item.path}
-              className="flex flex-col items-center justify-center -mt-5 group"
+              className="flex flex-col items-center justify-center -mt-5 group min-w-[48px] min-h-[44px] touch-manipulation"
+              aria-label={item.label}
             >
               <div
                 className="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-lg signal-glow transition-transform group-hover:scale-105"
@@ -54,8 +55,9 @@ export function MobileBottomNav() {
           <NavLink
             key={item.path}
             to={item.path}
+            aria-label={item.label}
             className={({ isActive }) =>
-              `flex flex-col items-center justify-center p-1 rounded-lg transition-colors relative ${
+              `flex flex-col items-center justify-center p-2 rounded-xl transition-colors relative min-w-[48px] min-h-[44px] touch-manipulation ${
                 isActive ? 'text-primary' : 'text-zinc-400 hover:text-white'
               }`
             }

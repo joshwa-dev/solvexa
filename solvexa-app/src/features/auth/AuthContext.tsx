@@ -15,12 +15,21 @@ import {
 } from '../../services/auth/profileService';
 import { getGoogleRedirectResult, signOutUser } from '../../services/auth/authService';
 import { dataStore, type DataMode } from '../../services/store/dataStore';
+import { initAppCheck } from '../../services/security/appCheck';
+
+export type AuthStatus =
+  | 'INITIALIZING'
+  | 'AUTHENTICATING'
+  | 'AUTHENTICATED'
+  | 'UNAUTHENTICATED'
+  | 'ERROR';
 
 export interface AuthContextValue {
   firebaseUser: User | null;
   solvexaUser: SolvexaUser | null;
   loading: boolean;
   isAuthenticated: boolean;
+  authStatus: AuthStatus;
   onboardingComplete: boolean;
   isGuest: boolean;
   dataMode: DataMode;
@@ -40,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return localStorage.getItem('solvexa_guest_mode') === 'true';
   });
   const [dataMode, setDataModeState] = useState<DataMode>(() => dataStore.getDataMode());
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('INITIALIZING');
   const [loading, setLoading] = useState(true);
 
   const loadProfile = useCallback(async (user: User) => {
@@ -71,6 +81,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           username: generatedUsername,
           email: user.email || '',
           photoURL: user.photoURL || null,
+          avatarUrl: user.photoURL || null,
+          avatar: user.photoURL || null,
+          profileImage: user.photoURL || null,
           coverPhotoURL: null,
           bio: '',
           location: '',
@@ -123,11 +136,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       dataStore.setDataMode('REAL');
       setDataModeState('REAL');
       dataStore.setCurrentUser(profile);
+      setAuthStatus('AUTHENTICATED');
     } catch (error) {
       if (import.meta.env.DEV) {
         console.warn('[AuthContext] Firestore read notice, loading authentic user profile:', error);
       }
-      // Strictly construct authentic profile from the authenticated Firebase User credentials
+      // Fallback: Strictly construct authentic profile from the authenticated Firebase User credentials
       const authenticProfile: SolvexaUser = {
         uid: user.uid,
         displayName: user.displayName || user.email?.split('@')[0] || 'Solvexa Pioneer',
@@ -136,6 +150,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           .replace(/[^a-z0-9_]/g, '_'),
         email: user.email || '',
         photoURL: user.photoURL || null,
+        avatarUrl: user.photoURL || null,
+        avatar: user.photoURL || null,
+        profileImage: user.photoURL || null,
         coverPhotoURL: null,
         bio: '',
         location: '',
@@ -172,6 +189,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       dataStore.setDataMode('REAL');
       setDataModeState('REAL');
       dataStore.setCurrentUser(authenticProfile);
+      setAuthStatus('AUTHENTICATED');
     }
   }, []);
 
@@ -189,6 +207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     dataStore.setDataMode('DEMO');
     setDataModeState('DEMO');
     setSolvexaUser(dataStore.getCurrentUser());
+    setAuthStatus('AUTHENTICATED');
     setLoading(false);
   }, []);
 
@@ -198,6 +217,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     dataStore.setDataMode('DEMO');
     setDataModeState('DEMO');
     setSolvexaUser(dataStore.getCurrentUser());
+    setAuthStatus('AUTHENTICATED');
   }, []);
 
   const exitDemoMode = useCallback(() => {
@@ -208,6 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setDataModeState('REAL');
     setFirebaseUser(null);
     setSolvexaUser(null);
+    setAuthStatus('UNAUTHENTICATED');
   }, []);
 
   const signOut = useCallback(async () => {
@@ -223,10 +244,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setDataModeState('REAL');
     setFirebaseUser(null);
     setSolvexaUser(null);
+    setAuthStatus('UNAUTHENTICATED');
   }, []);
 
   useEffect(() => {
-    // Listen for dataStore local changes
+    // 1. Initialize Firebase App Check
+    initAppCheck();
+
+    // 2. Listen for dataStore local changes
     const unsubStore = dataStore.subscribe(() => {
       const current = dataStore.getCurrentUser();
       if (current && current.uid !== 'user_anonymous') {
@@ -235,12 +260,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setDataModeState(dataStore.getDataMode());
     });
 
-    // Handle Google redirect result on app start
-    getGoogleRedirectResult().catch((error) => {
-      console.warn('[AuthContext] Redirect result skipped:', error);
-    });
+    // 3. Process Google redirect result on app mount if present
+    getGoogleRedirectResult()
+      .then(async (credential) => {
+        if (credential?.user) {
+          setAuthStatus('AUTHENTICATING');
+          await loadProfile(credential.user);
+        }
+      })
+      .catch((error) => {
+        if (import.meta.env.DEV) {
+          console.warn('[AuthContext] Redirect result notice:', error);
+        }
+      });
 
-    // Subscribe to auth state changes
+    // 4. Subscribe to Firebase auth state changes
     try {
       const unsubscribe = onAuthStateChanged(auth, async (user) => {
         setFirebaseUser(user);
@@ -255,9 +289,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setDataModeState('DEMO');
           const current = dataStore.getCurrentUser();
           setSolvexaUser(current);
+          setAuthStatus('AUTHENTICATED');
         } else {
           dataStore.clearUserSession();
           setSolvexaUser(null);
+          setAuthStatus('UNAUTHENTICATED');
         }
 
         setLoading(false);
@@ -267,12 +303,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         unsubscribe();
         unsubStore();
       };
-    } catch {
+    } catch (err) {
       if (localStorage.getItem('solvexa_guest_mode') === 'true') {
         setIsGuest(true);
         dataStore.setDataMode('DEMO');
         setDataModeState('DEMO');
         setSolvexaUser(dataStore.getCurrentUser());
+        setAuthStatus('AUTHENTICATED');
+      } else {
+        setAuthStatus('UNAUTHENTICATED');
       }
       setLoading(false);
       return () => unsubStore();
@@ -286,6 +325,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     solvexaUser,
     loading,
     isAuthenticated,
+    authStatus,
     onboardingComplete: solvexaUser?.onboardingComplete ?? true,
     isGuest,
     dataMode,
