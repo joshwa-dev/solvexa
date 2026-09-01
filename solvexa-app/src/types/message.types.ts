@@ -44,10 +44,12 @@ export interface Message {
   conversationId: string;
   senderId: string;
   content: string;
+  text?: string;
   type: MessageType;
   media?: MediaItem;
   sharedContent: SharedContent | null;
   sentAt: any;
+  createdAt?: any;
   id?: string;
   deleted?: boolean;
   isDeleted?: boolean;

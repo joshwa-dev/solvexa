@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { doc, getDoc, collection } from 'firebase/firestore';
+import { db } from '../../services/firebase/config';
 import { dataStore } from '../../services/store/dataStore';
 import { useAuth } from '../auth/AuthContext';
 import type { Conversation, Message } from '../../types/message.types';
@@ -14,6 +16,8 @@ import {
   sendMessageInFirestore,
   deleteMessageForMeInFirestore,
   deleteMessageForEveryoneInFirestore,
+  getDirectConversationId,
+  dedupeMessages,
 } from '../../services/firestore/nexusService';
 
 export default function MessagesPage() {
@@ -58,6 +62,16 @@ export default function MessagesPage() {
       setActiveConversationId(queryConvId);
     }
   }, [queryConvId]);
+
+  // Support target user parameter in URL (?user=...)
+  useEffect(() => {
+    if (!targetUserId || activeConversationId) return;
+    const currentUid = solvexaUser?.uid;
+    if (dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous') && !targetUserId.startsWith('user_')) {
+      const convId = getDirectConversationId(currentUid, targetUserId);
+      setActiveConversationId(convId);
+    }
+  }, [targetUserId, solvexaUser?.uid, dataMode, activeConversationId]);
 
   // Load and subscribe to conversations
   useEffect(() => {
@@ -109,6 +123,28 @@ export default function MessagesPage() {
     };
   }, [targetUserId, solvexaUser?.uid, dataMode]);
 
+  // Ensure active conversation document is fetched immediately even if not yet in user's list
+  useEffect(() => {
+    if (!activeConversationId) return;
+    if (conversations.some((c) => c.conversationId === activeConversationId)) return;
+
+    const currentUid = solvexaUser?.uid;
+    if (dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous')) {
+      const convRef = doc(db, 'conversations', activeConversationId);
+      getDoc(convRef)
+        .then((snap) => {
+          if (snap.exists()) {
+            const convData = snap.data() as Conversation;
+            setConversations((prev) => {
+              if (prev.some((c) => c.conversationId === convData.conversationId)) return prev;
+              return [convData, ...prev];
+            });
+          }
+        })
+        .catch((e) => console.warn('[MessagesPage] Direct conversation fetch notice:', e));
+    }
+  }, [activeConversationId, solvexaUser?.uid, dataMode, conversations]);
+
   // Load messages for the active conversation
   useEffect(() => {
     if (!activeConversationId) {
@@ -127,32 +163,19 @@ export default function MessagesPage() {
       !currentUid.startsWith('guest_')
     ) {
       unsubMessages = subscribeToConversationMessages(activeConversationId, (firestoreMsgs) => {
-        // Reconcile messages by canonical ID using Map to strictly eliminate any duplicates
-        const messageMap = new Map<string, Message>();
-        for (const m of firestoreMsgs) {
-          const id = m.messageId || (m as any).id;
-          if (id) {
-            // Filter out messages deleted for current viewer
-            if (!m.deletedFor || !m.deletedFor.includes(currentUid)) {
-              messageMap.set(id, { ...m, messageId: id });
-            }
-          }
-        }
-        // Sort strictly chronologically by sentAt
-        const sorted = Array.from(messageMap.values()).sort(
-          (a, b) => new Date(a.sentAt || 0).getTime() - new Date(b.sentAt || 0).getTime()
+        // Filter out messages deleted for current viewer
+        const viewerFiltered = firestoreMsgs.filter(
+          (m) => !m.deletedFor || !m.deletedFor.includes(currentUid)
         );
-        setMessages(sorted);
+        // Canonical deduplication and strict chronological ordering
+        setMessages(dedupeMessages(viewerFiltered));
         setTimeout(() => {
           messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
         }, 50);
       });
     } else {
       const msgs = dataStore.getMessages(activeConversationId);
-      const sorted = msgs.sort(
-        (a, b) => new Date(a.sentAt || 0).getTime() - new Date(b.sentAt || 0).getTime()
-      );
-      setMessages(sorted);
+      setMessages(dedupeMessages(msgs));
     }
 
     // Auto-focus input
@@ -162,7 +185,10 @@ export default function MessagesPage() {
     }, 100);
 
     return () => {
-      if (unsubMessages) unsubMessages();
+      if (unsubMessages) {
+        unsubMessages();
+        unsubMessages = null;
+      }
     };
   }, [activeConversationId, solvexaUser?.uid, dataMode]);
 
@@ -187,7 +213,9 @@ export default function MessagesPage() {
     }
 
     const text = messageInput.trim();
-    if ((!text && !attachedFile) || !activeConversationId) return;
+    if ((!text && !attachedFile) || !activeConversationId || activeConversationId === 'undefined') {
+      return;
+    }
 
     sendLockRef.current = true;
     lastSendTimeRef.current = now;
@@ -209,18 +237,27 @@ export default function MessagesPage() {
         !currentUid.startsWith('user_anonymous') &&
         !currentUid.startsWith('guest_')
       ) {
+        // Pre-generate stable canonical document ID once before write
+        const messagesColl = collection(db, 'conversations', activeConversationId, 'messages');
+        const messageId = doc(messagesColl).id;
+
         // In REAL mode, Firestore realtime onSnapshot is the single source of truth
-        await sendMessageInFirestore(activeConversationId, text, {
-          type: attachedFile ? 'media' : 'text',
-          media: mediaPayload,
-        });
+        await sendMessageInFirestore(
+          activeConversationId,
+          text,
+          {
+            type: attachedFile ? 'media' : 'text',
+            media: mediaPayload,
+          },
+          messageId
+        );
       } else {
         // DEMO mode
         dataStore.sendMessage(activeConversationId, text, {
           type: attachedFile ? 'media' : 'text',
           media: mediaPayload,
         });
-        setMessages(dataStore.getMessages(activeConversationId));
+        setMessages(dedupeMessages(dataStore.getMessages(activeConversationId)));
 
         if (otherParticipant) {
           setIsTyping(true);
@@ -233,7 +270,7 @@ export default function MessagesPage() {
             ];
             const randomReply = autoReplies[Math.floor(Math.random() * autoReplies.length)];
             dataStore.sendMessage(activeConversationId, randomReply);
-            setMessages(dataStore.getMessages(activeConversationId));
+            setMessages(dedupeMessages(dataStore.getMessages(activeConversationId)));
           }, 2000);
         }
       }
@@ -264,22 +301,24 @@ export default function MessagesPage() {
 
   const handleDeleteForMe = async () => {
     if (!activeConversationId || !selectedMessageForDelete || isDeleting) return;
-    const msgId = selectedMessageForDelete.messageId;
+    const targetMessageId = selectedMessageForDelete.id || selectedMessageForDelete.messageId;
+    setSelectedMessageForDelete(null);
+
+    // Filter message for current user in local state
+    setMessages((prev) => prev.filter((m) => (m.id || m.messageId) !== targetMessageId));
 
     try {
       setIsDeleting(true);
-      setSelectedMessageForDelete(null);
-
       if (
         dataMode === 'REAL' &&
         currentUid &&
         !currentUid.startsWith('user_anonymous') &&
         !currentUid.startsWith('guest_')
       ) {
-        await deleteMessageForMeInFirestore(activeConversationId, msgId);
+        await deleteMessageForMeInFirestore(activeConversationId, targetMessageId);
       } else {
-        dataStore.deleteMessageForMe(activeConversationId, msgId);
-        setMessages(dataStore.getMessages(activeConversationId));
+        dataStore.deleteMessageForMe(activeConversationId, targetMessageId);
+        setMessages(dedupeMessages(dataStore.getMessages(activeConversationId)));
       }
     } catch (err) {
       console.error('[MessagesPage] Error deleting message for me:', err);
@@ -297,22 +336,39 @@ export default function MessagesPage() {
     ) {
       return;
     }
-    const msgId = selectedMessageForDelete.messageId;
+    const targetMessageId = selectedMessageForDelete.id || selectedMessageForDelete.messageId;
+    setSelectedMessageForDelete(null);
+
+    // Update existing message in-place in local state (Phase 7 rule)
+    setMessages((prev) =>
+      prev.map((msg) =>
+        (msg.id === targetMessageId || msg.messageId === targetMessageId)
+          ? {
+              ...msg,
+              deleted: true,
+              isDeleted: true,
+              isDeletedForEveryone: true,
+              content: 'This message was deleted',
+              text: '',
+              media: undefined,
+              sharedContent: null,
+            }
+          : msg
+      )
+    );
 
     try {
       setIsDeleting(true);
-      setSelectedMessageForDelete(null);
-
       if (
         dataMode === 'REAL' &&
         currentUid &&
         !currentUid.startsWith('user_anonymous') &&
         !currentUid.startsWith('guest_')
       ) {
-        await deleteMessageForEveryoneInFirestore(activeConversationId, msgId);
+        await deleteMessageForEveryoneInFirestore(activeConversationId, targetMessageId);
       } else {
-        dataStore.deleteMessageForEveryone(activeConversationId, msgId);
-        setMessages(dataStore.getMessages(activeConversationId));
+        dataStore.deleteMessageForEveryone(activeConversationId, targetMessageId);
+        setMessages(dedupeMessages(dataStore.getMessages(activeConversationId)));
       }
     } catch (err) {
       console.error('[MessagesPage] Error deleting message for everyone:', err);

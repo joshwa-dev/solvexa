@@ -7,6 +7,7 @@ import { Avatar } from '../../components/common/Avatar';
 import { Modal } from '../../components/common/Modal';
 import { EmptyState } from '../../components/common/EmptyState';
 import { uploadMediaFile, getSignalThumbnail, getCloudinaryVideoThumbnail } from '../../services/storage/mediaUpload';
+import { getOrCreateFirestoreConversation } from '../../services/firestore/nexusService';
 
 export default function SignalsPage() {
   const { solvexaUser, dataMode } = useAuth();
@@ -107,21 +108,39 @@ export default function SignalsPage() {
     dataStore.toggleFollowUser(currentSignal.authorId);
   };
 
-  const handleMessageCreator = () => {
+  const handleMessageCreator = async () => {
     if (!currentSignal) return;
     if (isAuthor) {
       showToast('This is your own signal broadcast.');
       return;
     }
 
-    const conv = dataStore.getOrCreateConversation({
+    const currentUid = solvexaUser?.uid;
+    const targetData = {
       uid: currentSignal.authorId,
       displayName: currentSignal.authorName,
       username: currentSignal.authorUsername,
       photoURL: currentSignal.authorAvatar,
-    });
+    };
 
-    navigate(`/messages?id=${conv.conversationId}`);
+    if (dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous') && !currentSignal.authorId.startsWith('user_')) {
+      try {
+        const viewerUser = {
+          uid: currentUid,
+          displayName: solvexaUser?.displayName || 'Solvexa Pioneer',
+          username: solvexaUser?.username || 'user',
+          photoURL: solvexaUser?.photoURL || null,
+        };
+        const conv = await getOrCreateFirestoreConversation(targetData, viewerUser);
+        dataStore.addOrUpdateConversation(conv);
+        navigate(`/messages?id=${conv.conversationId}`);
+      } catch (err) {
+        navigate(`/messages?user=${currentSignal.authorId}`);
+      }
+    } else {
+      const conv = dataStore.getOrCreateConversation(targetData);
+      navigate(`/messages?id=${conv.conversationId}`);
+    }
   };
 
   const handleShareSignal = () => {

@@ -62,12 +62,51 @@ export function subscribeToUserConversations(
 }
 
 /**
+ * Deduplicates messages strictly by canonical message ID.
+ * Preserves message content and order while ensuring no duplicates exist in state.
+ */
+export function dedupeMessages(messages: Message[]): Message[] {
+  const map = new Map<string, Message>();
+  for (const msg of messages) {
+    const key = msg.id || msg.messageId;
+    if (key) {
+      const isDel = Boolean(
+        msg.deleted ||
+          msg.isDeleted ||
+          msg.isDeletedForEveryone ||
+          msg.content === 'This message was deleted' ||
+          msg.text === 'This message was deleted'
+      );
+      map.set(key, {
+        ...msg,
+        id: key,
+        messageId: key,
+        content: isDel ? 'This message was deleted' : msg.content || msg.text || '',
+        text: isDel ? '' : msg.text || msg.content || '',
+        sentAt: msg.sentAt || msg.createdAt || new Date().toISOString(),
+        createdAt: msg.createdAt || msg.sentAt || new Date().toISOString(),
+        deleted: isDel,
+        isDeleted: isDel,
+        isDeletedForEveryone: Boolean(msg.isDeletedForEveryone || isDel),
+      });
+    }
+  }
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(a.sentAt || a.createdAt || 0).getTime() - new Date(b.sentAt || b.createdAt || 0).getTime()
+  );
+}
+
+/**
  * Subscribes to real-time messages for a specific conversation
  */
 export function subscribeToConversationMessages(
   conversationId: string,
   onUpdate: (messages: Message[]) => void
 ): Unsubscribe {
+  if (!conversationId || conversationId === 'undefined' || !conversationId.trim()) {
+    return () => {};
+  }
+
   try {
     const messagesRef = collection(db, CONVERSATIONS_COLLECTION, conversationId, 'messages');
     const q = query(messagesRef, orderBy('sentAt', 'asc'));
@@ -75,17 +114,17 @@ export function subscribeToConversationMessages(
     return onSnapshot(
       q,
       (snapshot) => {
-        // Map keyed by canonical Firestore document ID to strictly guarantee uniqueness
-        const msgMap = new Map<string, Message>();
+        const rawMsgs: Message[] = [];
         snapshot.docs.forEach((docSnap) => {
           const data = docSnap.data() as Message;
           const id = docSnap.id;
-          msgMap.set(id, {
+          rawMsgs.push({
             ...data,
+            id,
             messageId: id,
           });
         });
-        onUpdate(Array.from(msgMap.values()));
+        onUpdate(dedupeMessages(rawMsgs));
       },
       (error) => {
         console.warn('[nexusService] messages snapshot notice:', error);
@@ -109,6 +148,10 @@ export async function getOrCreateFirestoreConversation(
     throw new Error('Authentication required to initialize conversation.');
   }
 
+  if (!targetUser?.uid) {
+    throw new Error('Target user UID is required to initialize conversation.');
+  }
+
   if (currentUid === targetUser.uid) {
     throw new Error('Cannot start a conversation with yourself.');
   }
@@ -130,6 +173,10 @@ export async function getOrCreateFirestoreConversation(
   const currentUsername = viewerUser?.username || (auth.currentUser?.email?.split('@')[0] || `user_${currentUid.slice(0, 5)}`);
   const currentPhoto = viewerUser?.photoURL || auth.currentUser?.photoURL || null;
 
+  const targetDisplayName = targetUser.displayName || 'Solvexa Pioneer';
+  const targetUsername = targetUser.username || 'pioneer';
+  const targetPhoto = targetUser.photoURL || null;
+
   const newConv: Conversation = {
     conversationId,
     type: 'direct',
@@ -144,9 +191,9 @@ export async function getOrCreateFirestoreConversation(
       },
       {
         uid: targetUser.uid,
-        displayName: targetUser.displayName || 'Solvexa Pioneer',
-        username: targetUser.username || 'pioneer',
-        photoURL: targetUser.photoURL || null,
+        displayName: targetDisplayName,
+        username: targetUsername,
+        photoURL: targetPhoto,
         isOnline: false,
       },
     ],
@@ -162,8 +209,21 @@ export async function getOrCreateFirestoreConversation(
     createdBy: currentUid,
   };
 
-  await setDoc(convRef, sanitizeForFirestore(newConv), { merge: true });
-  return newConv;
+  try {
+    await setDoc(convRef, sanitizeForFirestore(newConv), { merge: true });
+    return newConv;
+  } catch (err) {
+    if (import.meta.env.DEV) {
+      console.error('[Solvexa Nexus]', {
+        conversationId,
+        currentUserId: currentUid,
+        otherUserId: targetUser.uid,
+        firestorePath: `conversations/${conversationId}`,
+        error: err,
+      });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -172,28 +232,36 @@ export async function getOrCreateFirestoreConversation(
 export async function sendMessageInFirestore(
   conversationId: string,
   content: string,
-  payload?: Partial<Message>
+  payload?: Partial<Message>,
+  clientMessageId?: string
 ): Promise<Message> {
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Authentication required to transmit message.');
   }
 
+  if (!conversationId || conversationId === 'undefined' || !conversationId.trim()) {
+    throw new Error('Valid conversationId is required to transmit message.');
+  }
+
   try {
     const messagesColl = collection(db, CONVERSATIONS_COLLECTION, conversationId, 'messages');
-    const msgRef = doc(messagesColl);
+    const msgRef = clientMessageId ? doc(messagesColl, clientMessageId) : doc(messagesColl);
     const messageId = msgRef.id;
     const now = new Date().toISOString();
 
     const newMsg: Message = {
+      id: messageId,
       messageId,
       conversationId,
       senderId: currentUser.uid,
       content,
+      text: content,
       type: payload?.type || 'text',
       media: payload?.media,
       sharedContent: payload?.sharedContent || null,
       sentAt: now,
+      createdAt: now,
       deletedFor: [],
       deleted: false,
       isDeleted: false,
@@ -205,8 +273,10 @@ export async function sendMessageInFirestore(
     const sanitizedConvUpdate = sanitizeForFirestore({
       lastMessage: {
         content: content || 'Shared an item',
+        text: content || 'Shared an item',
         senderId: currentUser.uid,
         sentAt: now,
+        createdAt: now,
         type: newMsg.type,
       },
       updatedAt: now,
@@ -233,7 +303,7 @@ export async function deleteMessageForMeInFirestore(
   messageId: string
 ): Promise<void> {
   const currentUser = auth.currentUser;
-  if (!currentUser) return;
+  if (!currentUser || !conversationId || !messageId) return;
 
   try {
     const msgRef = doc(db, CONVERSATIONS_COLLECTION, conversationId, 'messages', messageId);
@@ -261,7 +331,7 @@ export async function deleteMessageForEveryoneInFirestore(
   messageId: string
 ): Promise<void> {
   const currentUser = auth.currentUser;
-  if (!currentUser) return;
+  if (!currentUser || !conversationId || !messageId) return;
 
   try {
     const msgRef = doc(db, CONVERSATIONS_COLLECTION, conversationId, 'messages', messageId);
@@ -283,6 +353,7 @@ export async function deleteMessageForEveryoneInFirestore(
 
     await updateDoc(msgRef, {
       content: 'This message was deleted',
+      text: '',
       deleted: true,
       isDeleted: true,
       isDeletedForEveryone: true,
@@ -298,10 +369,13 @@ export async function deleteMessageForEveryoneInFirestore(
       const convData = convSnap.data() as Conversation;
       if (
         convData.lastMessage &&
-        (convData.lastMessage.sentAt === data.sentAt || convData.lastMessage.content === data.content)
+        (convData.lastMessage.sentAt === data.sentAt ||
+          convData.lastMessage.content === data.content ||
+          (convData.lastMessage as any).text === data.content)
       ) {
         await updateDoc(convRef, {
           'lastMessage.content': 'This message was deleted',
+          'lastMessage.text': 'This message was deleted',
           updatedAt: now,
         }).catch((e) => console.warn('[nexusService] lastMessage update on delete error:', e));
       }

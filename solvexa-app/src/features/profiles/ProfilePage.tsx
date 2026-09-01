@@ -19,7 +19,10 @@ import {
   getFollowersWithProfiles,
   getFollowingWithProfiles,
 } from '../../services/firestore/followService';
-import { getOrCreateFirestoreConversation } from '../../services/firestore/nexusService';
+import {
+  getOrCreateFirestoreConversation,
+  getDirectConversationId,
+} from '../../services/firestore/nexusService';
 import { EmptyState } from '../../components/common/EmptyState';
 import { formatRelativeTime, formatJoinedDate } from '../../lib/firestoreUtils';
 
@@ -442,7 +445,7 @@ export default function ProfilePage() {
         photoURL: resolveAvatarSrc(user) || null,
       };
 
-      if (dataMode === 'REAL') {
+      if (dataMode === 'REAL' && !user.uid.startsWith('user_')) {
         const viewerUser = {
           uid: currentUid,
           displayName: solvexaUser?.displayName || firebaseUser?.displayName || 'Solvexa Pioneer',
@@ -459,10 +462,19 @@ export default function ProfilePage() {
         navigate(`/messages?id=${conv.conversationId}`);
       }
     } catch (err: unknown) {
-      console.error('[ProfilePage] Direct message failed:', err);
       setIsOpeningChat(false);
-      const e = err as Error;
-      setShareToast(e.message || 'Unable to open conversation. Please try again.');
+      const e = err as any;
+      if (import.meta.env.DEV) {
+        console.error('[Solvexa Nexus]', {
+          conversationId: user?.uid && currentUid ? getDirectConversationId(currentUid, user.uid) : 'unknown',
+          currentUserId: currentUid,
+          otherUserId: user?.uid,
+          firestorePath: `conversations/${user?.uid && currentUid ? getDirectConversationId(currentUid, user.uid) : 'unknown'}`,
+          errorCode: e?.code || 'UNKNOWN',
+          errorMessage: e?.message || String(err),
+        });
+      }
+      setShareToast('Unable to open conversation. Please try again.');
       setTimeout(() => setShareToast(null), 3500);
     }
   };
@@ -1379,14 +1391,32 @@ export default function ProfilePage() {
                       </div>
 
                       <button
-                        onClick={() => {
-                          const conv = dataStore.getOrCreateConversation({
+                        onClick={async () => {
+                          const targetData = {
                             uid: node.uid,
                             displayName: node.displayName,
                             username: node.username,
                             photoURL: nodeAvatar,
-                          });
-                          navigate(`/messages?id=${conv.conversationId}`);
+                          };
+                          const currentUid = solvexaUser?.uid || firebaseUser?.uid;
+                          if (dataMode === 'REAL' && currentUid && !currentUid.startsWith('user_anonymous') && !node.uid.startsWith('user_')) {
+                            try {
+                              const viewerUser = {
+                                uid: currentUid,
+                                displayName: solvexaUser?.displayName || firebaseUser?.displayName || 'Solvexa Pioneer',
+                                username: solvexaUser?.username || 'user',
+                                photoURL: resolveAvatarSrc(solvexaUser, firebaseUser, true),
+                              };
+                              const conv = await getOrCreateFirestoreConversation(targetData, viewerUser);
+                              dataStore.addOrUpdateConversation(conv);
+                              navigate(`/messages?id=${conv.conversationId}`);
+                            } catch (e) {
+                              navigate(`/messages?user=${node.uid}`);
+                            }
+                          } else {
+                            const conv = dataStore.getOrCreateConversation(targetData);
+                            navigate(`/messages?id=${conv.conversationId}`);
+                          }
                         }}
                         className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white border border-white/10 text-xs"
                         title="Direct Message"
